@@ -1,0 +1,147 @@
+diff --git a/dev/usb/c/uhub b/dev/usb/c/uhub
+index 66282be..bfa6009 100644
+--- a/dev/usb/c/uhub
++++ b/dev/usb/c/uhub
+@@ -200,25 +200,65 @@ USB_ATTACH(uhub)
+ 	}
+ 
+ 	/* Get hub descriptor. */
+-	req.bmRequestType = UT_READ_CLASS_DEVICE;
+-	req.bRequest = UR_GET_DESCRIPTOR;
+-        USETW2(req.wValue, UDESC_HUB, 0);
+-	USETW(req.wIndex, 0);
+-	USETW(req.wLength, USB_HUB_DESCRIPTOR_SIZE);
+-	DPRINTFN(1,("usb_init_hub: getting hub descriptor\n"));
++	memset(&hubdesc, 0, sizeof(hubdesc));
++	if (dev->depth != 0 && dev->speed == USB_SPEED_SUPER) {
++		/*
++		 * USB3 spec 10.13.2.1: issuing a UDESC_HUB request to a
++		 * non-root SuperSpeed hub is invalid and can stall the
++		 * control pipe. SS hubs use a different, fixed-size
++		 * descriptor (UDESC_SSHUB) instead. Normalise it into the
++		 * same usb_hub_descriptor_t shape so nothing downstream of
++		 * this block needs to know the difference.
++		 */
++		usb_hub_ss_descriptor_t hssd;
++		int rmvlen;
++
++		memset(&hssd, 0, sizeof(hssd));
++		req.bmRequestType = UT_READ_CLASS_DEVICE;
++		req.bRequest = UR_GET_DESCRIPTOR;
++		USETW2(req.wValue, UDESC_SSHUB, 0);
++		USETW(req.wIndex, 0);
++		USETW(req.wLength, USB_HUB_SS_DESCRIPTOR_SIZE);
++		DPRINTFN(1,("usb_init_hub: getting SS hub descriptor\n"));
+ #ifdef __riscos
+-	err = usbd_do_request(dev, &req, (void *)&hubdesc);
++		err = usbd_do_request(dev, &req, (void *)&hssd);
+ #else
+-	err = usbd_do_request(dev, &req, &hubdesc);
++		err = usbd_do_request(dev, &req, &hssd);
+ #endif
+-	nports = hubdesc.bNbrPorts;
+-	if (!err && nports > 7) {
+-		USETW(req.wLength, USB_HUB_DESCRIPTOR_SIZE + (nports+1) / 8);
++		nports = hssd.bNbrPorts;
++		if (!err && nports > UHD_SS_NPORTS_MAX)
++			nports = hssd.bNbrPorts = UHD_SS_NPORTS_MAX;
++		rmvlen = (nports + 7) / 8;
++		hubdesc.bDescLength = USB_HUB_DESCRIPTOR_SIZE +
++		    (rmvlen > 1 ? rmvlen : 1) - 1;
++		hubdesc.bDescriptorType = hssd.bDescriptorType;
++		hubdesc.bNbrPorts = hssd.bNbrPorts;
++		hubdesc.wHubCharacteristics[0] = hssd.wHubCharacteristics[0];
++		hubdesc.wHubCharacteristics[1] = hssd.wHubCharacteristics[1];
++		hubdesc.bPwrOn2PwrGood = hssd.bPwrOn2PwrGood;
++		hubdesc.bHubContrCurrent = hssd.bHubContrCurrent;
++		memcpy(hubdesc.DeviceRemovable, hssd.DeviceRemovable, rmvlen);
++	} else {
++		req.bmRequestType = UT_READ_CLASS_DEVICE;
++		req.bRequest = UR_GET_DESCRIPTOR;
++	        USETW2(req.wValue, UDESC_HUB, 0);
++		USETW(req.wIndex, 0);
++		USETW(req.wLength, USB_HUB_DESCRIPTOR_SIZE);
++		DPRINTFN(1,("usb_init_hub: getting hub descriptor\n"));
+ #ifdef __riscos
+ 		err = usbd_do_request(dev, &req, (void *)&hubdesc);
+ #else
+ 		err = usbd_do_request(dev, &req, &hubdesc);
+ #endif
++		nports = hubdesc.bNbrPorts;
++		if (!err && nports > 7) {
++			USETW(req.wLength, USB_HUB_DESCRIPTOR_SIZE + (nports+1) / 8);
++#ifdef __riscos
++			err = usbd_do_request(dev, &req, (void *)&hubdesc);
++#else
++			err = usbd_do_request(dev, &req, &hubdesc);
++#endif
++		}
+ 	}
+ 	if (err) {
+ 		DPRINTF(("%s: getting hub descriptor failed, error=%s\n",
+@@ -246,6 +286,28 @@ USB_ATTACH(uhub)
+ 	hub->explore = uhub_explore;
+ 	hub->hubdesc = hubdesc;
+ 
++	if (dev->speed == USB_SPEED_SUPER && dev->depth != 0) {
++		/*
++		 * USB3 spec 10.13.2.5: a non-root SS hub must be told its
++		 * own tier so it can decrement route strings correctly for
++		 * its downstream devices. No USB2 equivalent exists.
++		 */
++		usb_device_request_t depthreq;
++		usbd_status derr;
++
++		depthreq.bmRequestType = UT_WRITE_CLASS_DEVICE;
++		depthreq.bRequest = UR_SET_HUB_DEPTH;
++		USETW(depthreq.wValue, dev->depth - 1);
++		USETW(depthreq.wIndex, 0);
++		USETW(depthreq.wLength, 0);
++		derr = usbd_do_request(dev, &depthreq, 0);
++		if (derr) {
++			DPRINTF(("%s: setting hub depth failed, error=%s\n",
++				 USBDEVNAME(sc->sc_dev), usbd_errstr(derr)));
++			goto bad;
++		}
++	}
++
+ 	DPRINTFN(1,("usbhub_init_hub: selfpowered=%d, parent=%p, "
+ 		    "parent->selfpowered=%d\n",
+ 		 dev->self_powered, dev->powersrc->parent,
+diff --git a/dev/usb/h/usb b/dev/usb/h/usb
+index 630d25b..7bb3adf 100644
+--- a/dev/usb/h/usb
++++ b/dev/usb/h/usb
+@@ -324,6 +324,8 @@ typedef struct {
+ #define UR_RESET_TT		0x09
+ #define UR_GET_TT_STATE		0x0a
+ #define UR_STOP_TT		0x0b
++#define UR_SET_HUB_DEPTH	0x0c	/* USB 3.0 only */
++#define UR_GET_PORT_ERR_COUNT	0x0d
+ 
+ /*
+  * Hub features from USB 2.0 spec, table 11-17 and updated by the
+@@ -364,6 +366,23 @@ typedef struct {
+ } UPACKED usb_hub_descriptor_t;
+ #define USB_HUB_DESCRIPTOR_SIZE 9 /* includes deprecated PortPowerCtrlMask */
+ 
++/* USB 3.0 SuperSpeed Hub Descriptor, USB3 spec 10.13.2.1 table 10-12.
++ * Fixed size (unlike usb_hub_descriptor_t's variable-length
++ * DeviceRemovable bitmap) since SS hubs are capped at 15 ports. */
++typedef struct {
++	uByte		bDescLength;
++	uByte		bDescriptorType;
++	uByte		bNbrPorts;
++#define UHD_SS_NPORTS_MAX	15
++	uWord		wHubCharacteristics;
++	uByte		bPwrOn2PwrGood;	/* delay in 2 ms units */
++	uByte		bHubContrCurrent;
++	uByte		bHubHdrDecLat;
++	uWord		wHubDelay;	/* forward delay in nanosec */
++	uByte		DeviceRemovable[2]; /* max 15 ports */
++} UPACKED usb_hub_ss_descriptor_t;
++#define USB_HUB_SS_DESCRIPTOR_SIZE 12
++
+ typedef struct {
+ 	uByte		bLength;
+ 	uByte		bDescriptorType;

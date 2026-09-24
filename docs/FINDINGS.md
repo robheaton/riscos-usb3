@@ -213,6 +213,35 @@ correctly defined and just need consuming code. Still confirmed absent
 (no definition anywhere): the SS Endpoint Companion Descriptor struct and
 the BOS descriptor struct — those need adding from scratch.
 
+## Patch 2: SuperSpeed hub descriptor + SET_HUB_DEPTH
+
+Cross-checked against real upstream NetBSD `uhub.c` (fetched from
+`NetBSD/src` trunk) before writing this, rather than guessing the shape.
+Two things it does, both required for any non-root SS hub to work at all:
+
+1. **`usbd_get_hub_desc` equivalent, inlined into `uhub_attach`**: for a
+   non-root hub (`dev->depth != 0`) at `USB_SPEED_SUPER`, request
+   `UDESC_SSHUB` instead of `UDESC_HUB` — issuing the USB2 hub descriptor
+   request to a real SS hub is invalid per spec and can stall its control
+   pipe. The new `usb_hub_ss_descriptor_t` (fixed 12 bytes, capped at 15
+   ports, matches NetBSD's struct exactly) is fetched then normalised
+   field-by-field into the existing `usb_hub_descriptor_t hubdesc` local,
+   so every line downstream of the fetch (port counting, `UHD_NOT_REMOV`,
+   `hub->hubdesc = hubdesc`, power-up delay calc) needs no changes at all.
+2. **`UR_SET_HUB_DEPTH`**: a USB3-only class request with no 2.0 equivalent.
+   A non-root SS hub has to be told its own tier so it can correctly
+   decrement route strings for whatever's plugged into it. Sent once, right
+   after the hub struct is allocated, gated on the same
+   `speed == USB_SPEED_SUPER && depth != 0` condition.
+
+Root hubs are excluded from both (`dev->depth != 0` guard) — matches
+upstream, and sidesteps the question of what `XHCIDriver`'s root hub
+emulation currently expects, which hasn't been checked yet.
+
+Verified by reconstruction: extracted both patches, applied them in order
+from a clean checkout of the four touched files, and byte-diffed the result
+against the actual edited working tree — identical in all four files.
+
 ## Remaining open question
 
 - What NetBSD source tree/tag is the best "donor" for the BOS/SS-hub/
