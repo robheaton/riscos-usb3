@@ -403,3 +403,35 @@ on real hardware yet.
 
 Real xHCI hardware (a USB3-capable Pi4 or similar) is needed to test any
 of that. Paused here pending access to such hardware.
+
+## Patch 4 (XHCIDriver/0003): route string for SS devices behind external hubs
+
+Fills in the gap deliberately deferred when scoping patch 3
+("root-port-direct SS only"). `xhci_new_device_common()` was passing a
+hardcoded `route = 0` to `xhci_init_slot()` regardless of topology depth
+— correct only for a device plugged directly into a root port.
+
+Added `xhci_route_string()`: walks the `dev->myhub` chain, collecting each
+hub's `powersrc->portno` (the port the next thing down is plugged into),
+then packs them into the 20-bit Slot Context Route String field per xHCI
+spec 4.3.3 / USB3 spec 8.9 — tier 1 (the hub nearest the root) in the
+least significant nibble, deeper tiers in successive nibbles. Capped at 5
+tiers (20 bits / 4 bits-per-nibble), matching the spec's own limit.
+
+Worked through the nibble ordering carefully by hand-tracing a two-hub-deep
+example, since walking the hub chain bottom-up (from the device towards
+the root) naturally produces port numbers in the *reverse* of the order
+they need to be packed in (deepest hub first, but tier 1 needs to land in
+the least-significant nibble) — a first draft got this backwards, caught
+by the trace before writing it down as a patch.
+
+Gated on `dev->speed == USB_SPEED_SUPER`: route strings are an SS-hub-only
+xHCI concept, meaningless for USB2 devices (which use hub+TT addressing
+instead), so non-SS devices keep getting `route = 0` same as before.
+
+Deliberately developed and verified (patch-apply reconstruction, all three
+XHCIDriver patches in sequence) without touching the root-port-direct SS
+path patch 3 already changed, so as not to conflate two untested behaviors
+before patch 3 gets its first real xHCI hardware test. Not yet tested on
+any hardware — needs an external SuperSpeed hub with a device behind it,
+which is a rarer test setup than a bare USB3 flash drive.

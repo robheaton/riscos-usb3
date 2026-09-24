@@ -1,0 +1,51 @@
+diff --git a/c/xhci b/c/xhci
+--- a/c/xhci
++++ b/c/xhci
+@@ -1908,6 +1908,36 @@
+ }
+ 
+ #ifdef RISCOS
++/*
++ * xHCI spec 4.3.3 / USB3 spec 8.9: the Slot Context Route String encodes
++ * the chain of downstream hub ports leading from the root hub down to
++ * this device, one nibble (1-15) per SuperSpeed hub tier crossed -- tier 1
++ * (the hub nearest the root) occupies the least significant nibble. It's
++ * 0 for a device attached directly to a root port. Only SS hubs below the
++ * root participate in SS routing; non-SS hubs never appear in this walk
++ * for a real SS device since a device can't be SuperSpeed if any hub
++ * between it and the root isn't.
++ */
++static uint32_t
++xhci_route_string(usbd_device_handle dev)
++{
++	uint8_t ports[5];
++	int n;
++	uint32_t route;
++	usbd_device_handle hub;
++
++	n = 0;
++	for (hub = dev; hub->myhub != NULL && hub->myhub->depth != 0 &&
++	    n < 5; hub = hub->myhub, n++) {
++		ports[n] = hub->powersrc->portno & 0xf;
++	}
++
++	route = 0;
++	for (int i = 0; i < n; i++)
++		route |= (uint32_t)ports[n - 1 - i] << (4 * i);
++	return route;
++}
++
+ static usbd_status xhci_new_device_common(usbd_device_handle dev, bool bsr)
+ {
+ 	struct xhci_softc * const sc = dev->bus->hci_private;
+@@ -1931,7 +1961,9 @@
+ 	err = xhci_enable_slot(sc, &slot);
+ 	if (err)
+ 		return err;
+-	err = xhci_init_slot(dev, slot, 0 /* USB3 route */, rhport);
++	err = xhci_init_slot(dev, slot,
++	    dev->speed == USB_SPEED_SUPER ? xhci_route_string(dev) : 0,
++	    rhport);
+ 	if (err)
+ 		return err;
+ 	xs = &sc->sc_slots[slot];
