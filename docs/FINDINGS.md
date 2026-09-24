@@ -151,17 +151,52 @@ plausibly a smaller job than "resync everything," and doesn't require
 touching `OHCIDriver`/`EHCIDriver`/`MUSBDriver`/`DWCDriver` at all since
 they can't produce `USB_SPEED_SUPER` devices in the first place.
 
-## Open questions / next things to check
+## Phase 0 findings (2026-09-24): the change is additive, not a restructure
 
-- Is `usb_subr.c`'s config-descriptor walk (`usbd_fill_iface_data` /
-  wherever it lives) structured so that inserting SS-companion-descriptor
-  parsing is a local, additive change, or does it assume a fixed descriptor
-  layout that would need restructuring? — not yet read in detail.
-- Does `DeviceFS`/the `USBDriver_RegisterBus` SWI boundary (the RISC OS ↔
-  NetBSD-import bridge, per the wiki's "Internal API" section) carry
-  anything speed-specific that would need updating, or is it opaque to
-  speed? — not yet checked.
+Read `usbd_fill_iface_data()` / `usbd_find_edesc()` in `usb_subr.c` in full.
+The endpoint-descriptor walk is a generic "step by `bLength`, stop on
+`UDESC_INTERFACE` or zero length" loop — it already tolerates unknown
+descriptor types sitting between endpoint descriptors (it just steps over
+them). Adding a check, right after an endpoint descriptor is found, for a
+following `UDESC_ENDPOINT_SS_COMP (0x30)` descriptor is a local addition to
+that one loop, not a restructure.
+
+The only structural change needed is a new field on `struct usbd_endpoint`
+(`usbdivar.h`) to hold a pointer to the parsed companion descriptor —
+currently just `{ edesc, refcnt, datatoggle }`, nothing SS-related.
+
+And there's a second matching stub on the consumer side, in `XHCIDriver`'s
+`xhci_configure_endpoint()`:
+
+```c
+XHCI_EPCTX_1_MAXB_SET(0)   /* hardcoded, every endpoint type, every call site */
+```
+
+Max burst is unconditionally zero. This is exactly the value the SS
+companion descriptor's `bMaxBurst` field should feed — another sign this
+was left as a deliberate stub waiting for the core to supply the data,
+not an oversight.
+
+**DeviceFS boundary — already fine.** `build/c/usbmodule` (the RISC OS
+glue/frontend) formats the displayed device speed via a message-file lookup:
+`sprintf(speed, "Spd%d", udev->speed)` → looked up in
+`build/Resources/UK/Messages`, which already has:
+
+```
+Spd1:Low
+Spd2:Full
+Spd3:High
+Spd4:Super
+Spd?:Unknown
+```
+
+`Spd4:Super` already exists. The glue layer just echoes `dev->speed`
+through with no speed-specific logic — nothing to change here.
+
+## Remaining open question
+
 - What NetBSD source tree/tag is the best "donor" for the BOS/SS-hub/
-  SS-companion-descriptor code — pulling from a NetBSD version close to
-  2015 (matching `XHCIDriver`'s vintage) to minimize unrelated diff noise,
-  rather than the latest NetBSD, is probably the pragmatic choice.
+  SS-companion-descriptor parsing code — pulling from a NetBSD version
+  close to 2015 (matching `XHCIDriver`'s vintage) to minimize unrelated
+  diff noise, rather than the latest NetBSD, is probably the pragmatic
+  choice. Not yet picked.
