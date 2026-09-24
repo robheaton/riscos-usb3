@@ -378,3 +378,12 @@ first-principles reasoning about the xHCI port-pairing model rather than
 copying a verified reference implementation (unlike patches 1+2, which
 were checked against upstream NetBSD source directly). Needs a real
 SuperSpeed device plugged into the CM4 to know if this actually works.
+
+## Patch 3 build + regression verification (2026-09-24)
+
+Builds clean, boots, and existing USB2 devices still work normally on the
+CM4. Confirms `xhci_rhport_reg()` and the root hub emulation changes are
+at least not breaking the HS/FS/LS path they now share logic with.
+Still need a real SuperSpeed device plugged into the CM4's own USB3 port
+to know whether the actual goal — SS devices reporting `Super` via
+`*USBDevInfo` instead of being silently downgraded — is achieved.
