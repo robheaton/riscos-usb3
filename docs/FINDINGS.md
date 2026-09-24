@@ -255,3 +255,11 @@ against the actual edited working tree — identical in all four files.
 Patches 1 and 2 build clean under the native DDE on the CM4 (RISC OS 5.31).
 No compiler complaints about the `memset`/`memcpy` usage added to `uhub.c`
 (the one thing I couldn't verify without a compiler) or anything else.
+
+## Hardware verification (2026-09-24): no regression
+
+Rebuilt ROM booted fine on the CM4, USB (keyboard/mouse/storage) works
+normally. Confirms patches 1+2 are a genuine no-op for non-SS devices, not
+just "compiles clean" — the enumeration path they touch (endpoint-descriptor
+walk, hub descriptor fetch) is exercised by every USB device, and nothing
+regressed. Cleared to move on to the actual speed-unlock patch.
