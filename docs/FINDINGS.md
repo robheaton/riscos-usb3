@@ -249,3 +249,9 @@ against the actual edited working tree — identical in all four files.
   close to 2015 (matching `XHCIDriver`'s vintage) to minimize unrelated
   diff noise, rather than the latest NetBSD, is probably the pragmatic
   choice. Not yet picked.
+
+## Build verification (2026-09-24)
+
+Patches 1 and 2 build clean under the native DDE on the CM4 (RISC OS 5.31).
+No compiler complaints about the `memset`/`memcpy` usage added to `uhub.c`
+(the one thing I couldn't verify without a compiler) or anything else.
