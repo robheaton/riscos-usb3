@@ -1,0 +1,75 @@
+diff --git a/dev/usb/c/usb_subr b/dev/usb/c/usb_subr
+index c5e5ee9..2657f54 100644
+--- a/dev/usb/c/usb_subr
++++ b/dev/usb/c/usb_subr
+@@ -510,6 +510,23 @@ usbd_fill_iface_data(usbd_device_handle dev, int ifaceidx, int altidx)
+ 		goto bad;
+ 	found:
+ 		ifc->endpoints[endpt].edesc = ed;
++		ifc->endpoints[endpt].ecomp = NULL;
++		if (dev->speed == USB_SPEED_SUPER) {
++			/*
++			 * USB3 spec 9.6.7: a SuperSpeed Endpoint Companion
++			 * Descriptor immediately follows its endpoint
++			 * descriptor. Optional to check for defensively,
++			 * since not all classes emit one (e.g. control eps).
++			 */
++			char *cp = p + ed->bLength;
++			if (cp + USB_ENDPOINT_SS_COMP_DESCRIPTOR_SIZE <= end) {
++				usb_endpoint_ss_comp_descriptor_t *ec =
++				    (usb_endpoint_ss_comp_descriptor_t *)cp;
++				if (ec->bDescriptorType ==
++				    UDESC_ENDPOINT_SS_COMP)
++					ifc->endpoints[endpt].ecomp = ec;
++			}
++		}
+ 		if (dev->speed == USB_SPEED_HIGH) {
+ 			u_int mps;
+ 			/* Control and bulk endpoints have max packet limits. */
+diff --git a/dev/usb/h/usb b/dev/usb/h/usb
+index 4406022..0f2bfe0 100644
+--- a/dev/usb/h/usb
++++ b/dev/usb/h/usb
+@@ -296,6 +296,20 @@ typedef struct {
+ } UPACKED usb_endpoint_descriptor_t;
+ #define USB_ENDPOINT_DESCRIPTOR_SIZE 7
+ 
++/* USB 3.x SuperSpeed Endpoint Companion Descriptor, USB3 spec 9.6.7 */
++#define  UDESC_ENDPOINT_SS_COMP	0x30
++
++typedef struct {
++	uByte		bLength;
++	uByte		bDescriptorType;
++	uByte		bMaxBurst;
++	uByte		bmAttributes;
++#define UE_GET_SS_ISO_MULT(a)	((a) & 0x03)	/* isoc: extra opportunities */
++#define UE_GET_BULK_STREAMS(a)	((a) & 0x1f)	/* bulk: log2(max streams) */
++	uWord		wBytesPerInterval;
++} UPACKED usb_endpoint_ss_comp_descriptor_t;
++#define USB_ENDPOINT_SS_COMP_DESCRIPTOR_SIZE 6
++
+ typedef struct {
+ 	uByte		bLength;
+ 	uByte		bDescriptorType;
+diff --git a/dev/usb/h/usbdivar b/dev/usb/h/usbdivar
+index 5932f6e..b7ff8c1 100644
+--- a/dev/usb/h/usbdivar
++++ b/dev/usb/h/usbdivar
+@@ -61,6 +61,7 @@ struct usbd_port;
+ 
+ struct usbd_endpoint {
+ 	usb_endpoint_descriptor_t *edesc;
++	usb_endpoint_ss_comp_descriptor_t *ecomp; /* NULL if not SuperSpeed */
+ 	int			refcnt;
+ 	int datatoggle;
+ };
+@@ -140,7 +141,8 @@ struct usbd_bus {
+ #define USBREV_1_0	2
+ #define USBREV_1_1	3
+ #define USBREV_2_0	4
+-#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0" }
++#define USBREV_3_0	5
++#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0", "3.0" }
+ 
+ #ifdef USB_USE_SOFTINTR
+ #ifdef __HAVE_GENERIC_SOFT_INTERRUPTS

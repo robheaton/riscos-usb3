@@ -193,6 +193,26 @@ Spd?:Unknown
 `Spd4:Super` already exists. The glue layer just echoes `dev->speed`
 through with no speed-specific logic — nothing to change here.
 
+## Correction: more USB3 constant plumbing already exists than first found
+
+A closer read of `dev/usb/h/usb` turned up several more USB3-related
+`#define`s already present — `UDESC_SSHUB` (0x2a, correct name — not
+`UDESC_SS_HUB` as first guessed), `UDPROTO_SSHUB` (0x03), `UPS_SUPER_SPEED`
+(0x0600, the SuperSpeed port-status link-speed value), and
+`USB_3_MAX_CTRL_PACKET` (512). None of these predate 2005 in upstream
+NetBSD, so like `USB_SPEED_SUPER`, they're RISC OS-local additions layered
+onto the 2005 base — **but grepping the `.c` files, none of the four are
+referenced anywhere.** Defined, never consumed. Same pattern as the one
+`USB_SPEED_SUPER` check in `usb_subr.c`: someone has been dropping in
+constants in anticipation of USB3 work, without wiring up the logic that
+would use them.
+
+Net effect on scope: slightly less new code needed than first estimated —
+the hub-descriptor-type and port-status constants for SS are already
+correctly defined and just need consuming code. Still confirmed absent
+(no definition anywhere): the SS Endpoint Companion Descriptor struct and
+the BOS descriptor struct — those need adding from scratch.
+
 ## Remaining open question
 
 - What NetBSD source tree/tag is the best "donor" for the BOS/SS-hub/

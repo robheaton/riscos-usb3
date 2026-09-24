@@ -1,0 +1,34 @@
+diff --git a/c/xhci b/c/xhci
+index f321267..0061097 100644
+--- a/c/xhci
++++ b/c/xhci
+@@ -1113,6 +1113,11 @@ xhci_configure_endpoint(usbd_pipe_handle pipe)
+ 	const uint8_t xfertype = UE_GET_XFERTYPE(ed->bmAttributes);
+ #ifdef BRANCH_NHUSB
+ 	uint32_t mps = UGETW(ed->wMaxPacketSize);
++	/* USB3 spec 9.6.7: burst count comes from the SS endpoint companion
++	 * descriptor, not the base endpoint descriptor; absent for non-SS
++	 * devices and for endpoint types that don't burst. */
++	uint32_t maxb = pipe->endpoint->ecomp ?
++	    pipe->endpoint->ecomp->bMaxBurst : 0;
+ #endif
+ 	struct xhci_trb trb;
+ 	usbd_status err;
+@@ -1149,7 +1154,7 @@ xhci_configure_endpoint(usbd_pipe_handle pipe)
+ 	cp[1] = htole32(
+ 	    XHCI_EPCTX_1_CERR_SET(3) |
+ 	    XHCI_EPCTX_1_EPTYPE_SET(xhci_ep_get_type(pipe->endpoint->edesc)) |
+-	    XHCI_EPCTX_1_MAXB_SET(0) |
++	    XHCI_EPCTX_1_MAXB_SET(maxb) |
+ 	    XHCI_EPCTX_1_MAXP_SIZE_SET(UE_GET_SIZE(mps))
+ 	    );
+ #else
+@@ -1169,7 +1174,7 @@ xhci_configure_endpoint(usbd_pipe_handle pipe)
+ 	cp[1] = htole32(
+ 	    XHCI_EPCTX_1_CERR_SET(3) |
+ 	    XHCI_EPCTX_1_EPTYPE_SET(xhci_ep_get_type(pipe->endpoint->edesc)) |
+-	    XHCI_EPCTX_1_MAXB_SET(0) |
++	    XHCI_EPCTX_1_MAXB_SET(maxb) |
+ 	    XHCI_EPCTX_1_MAXP_SIZE_SET(UE_GET_SIZE(mps))
+ 	    );
+ #else
