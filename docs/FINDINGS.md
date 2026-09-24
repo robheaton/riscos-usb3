@@ -387,3 +387,19 @@ at least not breaking the HS/FS/LS path they now share logic with.
 Still need a real SuperSpeed device plugged into the CM4's own USB3 port
 to know whether the actual goal — SS devices reporting `Super` via
 `*USBDevInfo` instead of being silently downgraded — is achieved.
+
+## Correction: current test hardware has no XHCI controller at all
+
+The CM4 board in use has no USB3 (xHCI) ports — only the DWC2 OTG
+controller. `*USBDevices` confirmed this: every device including the test
+flash drive shows up on Bus 1 (`Synopsys DWC OTG root hub`); no Bus 2
+(`XHCIDriver`'s root hub) appears at all. All hardware testing done so far
+(patches 1-3, multiple boots, keyboard/mouse/hub/storage all working) has
+exercised the DWC2/USB2 path only — a genuinely useful regression test
+for the `USBDriver` core changes (patches 1-3 all touch shared code paths
+DWC2 devices go through too), but has not touched `XHCIDriver` at runtime
+at all, so none of patch 3's actual SS-enablement logic has been exercised
+on real hardware yet.
+
+Real xHCI hardware (a USB3-capable Pi4 or similar) is needed to test any
+of that. Paused here pending access to such hardware.
