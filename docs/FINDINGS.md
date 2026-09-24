@@ -263,3 +263,74 @@ normally. Confirms patches 1+2 are a genuine no-op for non-SS devices, not
 just "compiles clean" — the enumeration path they touch (endpoint-descriptor
 walk, hub descriptor fetch) is exercised by every USB device, and nothing
 regressed. Cleared to move on to the actual speed-unlock patch.
+
+## Patch 3 scoping (2026-09-24): the port-downgrade hack is not the only blocker
+
+Started tracing what removing the `xhci_init()` port-downgrade block would
+actually require, to see whether `sc_bus.usbrev` needs to change too.
+Found a materially bigger problem than expected.
+
+**`sc_bus.usbrev` itself is a red herring — leave it alone.** It's read
+exactly once in the whole stack: `USB_ATTACH(usb)` in `dev/usb/c/usb`,
+purely to classify the *root hub's own* nominal speed at bus-attach time.
+Its `switch` has no `USBREV_3_0` case and a `default:` that's a hard
+`ATTACH_ERROR` — so naively setting it to 3.0 would kill the root hub
+outright. Good news: nothing else touches it. Per-device speed flows
+entirely through the separate `speed` argument threaded through
+`usbd_new_device()`/`dev->speed`, independent of `usbrev`. So patch 3
+should leave `usbrev = USBREV_2_0` alone and only remove the port-disable
+loop.
+
+**But root-hub port status emulation never reports SuperSpeed at all.**
+`XHCIDriver`'s control-transfer handler fakes hub-class responses for the
+root hub (since xHCI root ports aren't a real USB hub device). The relevant
+code (`c/xhci` ~line 3050-3160):
+
+- The fake root hub descriptor reports `bNbrPorts = sc->sc_hs_port_count`
+  — only the HS/USB2 port grouping. The paired SS ports
+  (`sc_ss_port_start`/`sc_ss_port_count`, correctly parsed at init) are
+  never exposed as root hub ports at all.
+- `GET_STATUS` for a port always reads
+  `XHCI_PORTSC(sc->sc_hs_port_start - 1 + index)` — exclusively the HS-side
+  PORTSC register of the pair. The SS-side PORTSC is never read here.
+- The speed-decode switch (`XHCI_PS_SPEED_GET(v)`) only has cases for
+  1/2/3 (FS/LS/HS); no case 4 (SuperSpeed) — even if it did read the SS
+  register, it has nowhere to put the answer.
+
+Removing the port-downgrade hack in `xhci_init()` lets an SS device
+actually **link** at SuperSpeed electrically, but the root hub's own fake
+port-status response would still never tell the rest of the stack that
+happened. This is the actual blocker for anything plugged straight into
+the Pi4/Titanium's own sockets — bigger and different from the init-time
+hack.
+
+**Two attach code paths exist; only one is live on RISC OS.** `xhci.c`
+carries a complete, upstream-NetBSD-style `xhci_new_device()` with
+correctly-looking SS handling throughout (route/rhport math for SS ports,
+slot setup with real speed, the MaxPacketSize0-as-exponent quirk) — but
+it's compiled out (`#else` of `#ifdef RISCOS`) and dead on this platform.
+RISC OS instead uses a 3-hook split (`xhci_new_device_pre/_addr/_post`,
+backed by `xhci_new_device_common`) that calls into the generic
+`usbd_new_device()` in `usb_subr.c` instead of owning the whole sequence.
+`xhci_new_device_common` hardcodes the SS route string to `0`
+unconditionally:
+
+```c
+err = xhci_init_slot(dev, slot, 0 /* USB3 route */, rhport);
+```
+
+`0` is actually correct for a device plugged directly into a root port
+(no intermediate hub tiers to encode), but wrong for anything behind an
+external SS hub — the loop above it walks up to find the root port number
+but throws away each intermediate hub's own port number, which is exactly
+what a non-zero route string needs to encode. Haven't yet confirmed how
+much this actually matters in practice (need to check `xhci_init_slot`'s
+signature — there appear to be two different signatures used in the dead
+vs. live code paths, not yet reconciled) or how big a fix it is.
+
+**Net effect on scope**: "flip the switch" is now at least two changes,
+not one — (a) stop root hub GET_STATUS/descriptor emulation from hiding
+the SS ports and add the missing speed-4 case, on top of (b) the original
+port-downgrade removal — plus a probably-separate, lower-priority fix for
+route strings behind external SS hubs. Haven't started writing code for
+any of this yet; stopped to report scope growth before continuing.
