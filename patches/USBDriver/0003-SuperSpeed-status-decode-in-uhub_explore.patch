@@ -1,0 +1,21 @@
+diff --git a/dev/usb/c/uhub b/dev/usb/c/uhub
+index bfa6009..12db705 100644
+--- a/dev/usb/c/uhub
++++ b/dev/usb/c/uhub
+@@ -634,8 +634,14 @@ uhub_explore(usbd_device_handle dev)
+                 QueryDelay(dev, "USB$PortStartupDelay", USB_PORT_STARTUP_DELAY);
+ #endif
+ 
+-		/* Figure out device speed */
+-		if (status & UPS_HIGH_SPEED)
++		/* Figure out device speed. UPS_{LOW,HIGH,SUPER}_SPEED are not
++		 * independent flag bits -- they're a 2-bit field (wPortStatus
++		 * bits 9:10) where SUPER_SPEED (0x0600) has both the LOW and
++		 * HIGH bits set, so it must be checked before either of the
++		 * single-bit tests below or it's misread as HIGH_SPEED. */
++		if ((status & (UPS_HIGH_SPEED|UPS_LOW_SPEED)) == UPS_SUPER_SPEED)
++			speed = USB_SPEED_SUPER;
++		else if (status & UPS_HIGH_SPEED)
+ 			speed = USB_SPEED_HIGH;
+ 		else if (status & UPS_LOW_SPEED)
+ 			speed = USB_SPEED_LOW;

@@ -1,0 +1,111 @@
+diff --git a/c/xhci b/c/xhci
+--- a/c/xhci
++++ b/c/xhci
+@@ -193,6 +193,8 @@
+ 
+ static void xhci_noop(usbd_pipe_handle);
+ 
++static int xhci_rhport_reg(struct xhci_softc *, int);
++
+ static usbd_status xhci_root_ctrl_transfer(usbd_xfer_handle);
+ static usbd_status xhci_root_ctrl_start(usbd_xfer_handle);
+ static void xhci_root_ctrl_abort(usbd_xfer_handle);
+@@ -887,14 +889,12 @@
+ 	config |= sc->sc_maxslots & 0xFF;
+ 	xhci_op_write_4(sc, XHCI_CONFIG, config);
+ 
+-#ifdef RISCOS
+-	/* Disable any SuperSpeed ports since no USB3 yet */
+-	for (i = 0; i < sc->sc_ss_port_count; i++) {
+-		int port = XHCI_PORTSC(sc->sc_ss_port_start + i);
+-		/* Disable port then force RxDetect state to redo link as UBS2 or USB1 */
+-		xhci_op_write_4(sc, port, XHCI_PS_PLS_SET(5) | XHCI_PS_PED);
+-	}
+-#endif
++	/*
++	 * SuperSpeed ports are left to link at whatever speed the attached
++	 * device negotiates. Root hub emulation (xhci_rhport_reg()) picks
++	 * whichever side of a port pair is actually connected, and the
++	 * USBDriver core (uhub.c) now understands UPS_SUPER_SPEED.
++	 */
+ 
+ 	err = xhci_ring_init(sc, &sc->sc_cr, XHCI_COMMAND_RING_TRBS,
+ 	    XHCI_COMMAND_RING_SEGMENTS_ALIGN);
+@@ -2881,6 +2881,35 @@
+ 	return (xhci_root_ctrl_start(SIMPLEQ_FIRST(&xfer->pipe->queue)));
+ }
+ 
++/*
++ * A physical root hub port pair exposes two xHCI logical port numbers:
++ * one under the USB2 (HS/FS/LS) protocol grouping, one under the USB3
++ * (SuperSpeed) grouping (xhci_init() parses these out as
++ * sc_hs_port_start/sc_ss_port_start via the extended capabilities). Only
++ * one side of a given pair is ever actually linked at a time. Root hub
++ * port emulation is keyed by a single logical port `index`; this picks
++ * whichever side currently shows a device connected so that a SuperSpeed
++ * device plugged into a root port is reported correctly instead of being
++ * silently read via its unconnected USB2 twin.
++ *
++ * Root-port-direct SS devices only: this does not attempt to make SS
++ * hubs behind a root port, or devices behind those hubs, aware of their
++ * SS-ness beyond what the generic USBDriver core already does once told
++ * the correct speed here.
++ */
++static int
++xhci_rhport_reg(struct xhci_softc *sc, int index)
++{
++	int ssport;
++
++	if (index >= 1 && index <= sc->sc_ss_port_count) {
++		ssport = XHCI_PORTSC(sc->sc_ss_port_start - 1 + index);
++		if (xhci_op_read_4(sc, ssport) & XHCI_PS_CCS)
++			return ssport;
++	}
++	return XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++}
++
+ static usbd_status
+ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ {
+@@ -3051,7 +3080,7 @@
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		port = XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++		port = xhci_rhport_reg(sc, index);
+ 		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "portsc=0x%08x", v, 0, 0, 0);
+ 		v &= ~XHCI_PS_CLEAR;
+@@ -3121,10 +3150,10 @@
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		v = xhci_op_read_4(sc, XHCI_PORTSC(sc->sc_hs_port_start - 1 +
+-		    index));
++		port = xhci_rhport_reg(sc, index);
++		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "READ_CLASS_OTHER GET_STATUS PORTSC %d (%d) %08x",
+-		    index, sc->sc_hs_port_start - 1 + index, v, 0);
++		    index, port, v, 0);
+ 		switch (XHCI_PS_SPEED_GET(v)) {
+ 		case 1:
+ 			i = UPS_FULL_SPEED;
+@@ -3135,6 +3164,9 @@
+ 		case 3:
+ 			i = UPS_HIGH_SPEED;
+ 			break;
++		case 4:
++			i = UPS_SUPER_SPEED;
++			break;
+ 		default:
+ 			i = 0;
+ 			break;
+@@ -3166,7 +3198,7 @@
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		port = XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++		port = xhci_rhport_reg(sc, index);
+ 		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "portsc=0x%08x", v, 0, 0, 0);
+ 		v &= ~XHCI_PS_CLEAR;

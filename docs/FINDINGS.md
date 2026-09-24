@@ -334,3 +334,47 @@ the SS ports and add the missing speed-4 case, on top of (b) the original
 port-downgrade removal — plus a probably-separate, lower-priority fix for
 route strings behind external SS hubs. Haven't started writing code for
 any of this yet; stopped to report scope growth before continuing.
+
+## Patch 3 (root-port-direct SS only, as agreed)
+
+Three changes, split as patches USBDriver/0003 and XHCIDriver/0002:
+
+1. **`xhci_init()`**: removed the `#ifdef RISCOS` port-downgrade loop
+   entirely. SS ports now link at whatever speed the device negotiates.
+2. **New helper `xhci_rhport_reg(sc, index)`** in `XHCIDriver`: root hub
+   port emulation is keyed by one logical port number, but a physical port
+   pair has two xHCI register sets (HS side, SS side). This checks the SS
+   side's CCS (connect status) bit first and returns that register if a
+   device is linked there, else falls back to the HS side — replacing
+   three separate call sites in the root-hub control-request emulation
+   (`CLEAR_FEATURE`, `GET_STATUS`, `SET_FEATURE`) that previously read the
+   HS-side register unconditionally.
+3. **`GET_STATUS` speed decode**: added the missing `case 4: i =
+   UPS_SUPER_SPEED` (previously only had cases for FS/LS/HS).
+4. **`uhub.c`'s `uhub_explore()` speed decode**: found and fixed a real
+   bug while adding the `USB_SPEED_SUPER` case — `UPS_HIGH_SPEED`,
+   `UPS_LOW_SPEED`, `UPS_SUPER_SPEED` are not independent flag bits, they're
+   a 2-bit field (`0x0600 = 0x0400|0x0200`), so `UPS_SUPER_SPEED` was a
+   strict superset of `UPS_HIGH_SPEED`'s bit. The naive fix (just adding an
+   `else if (status & UPS_SUPER_SPEED)` arm) would never have been reached
+   — `if (status & UPS_HIGH_SPEED)` matches first and wrongly classifies
+   any SS device as `USB_SPEED_HIGH`. Fixed by checking the full 2-bit
+   field against `UPS_SUPER_SPEED` exactly, before the single-bit checks.
+
+**Deliberately out of scope, per agreed decision**: the external-SS-hub
+route-string bug in `xhci_new_device_common()` (hardcoded route=0). Devices
+plugged straight into the Pi4/Titanium's own root ports should now be
+reported as SuperSpeed correctly; devices behind an external SS hub are
+unaffected by this patch (they'll behave as before, no worse).
+
+Verified by full reconstruction: applied all five patches in sequence
+(USBDriver 0001-0003, XHCIDriver 0001-0002) to clean checkouts of all five
+touched files, byte-diffed against the actual working tree — identical.
+
+**Not yet verified against real NetBSD or real hardware.** This patch is
+materially riskier than 1+2 — it's the first one that changes observable
+behavior rather than being inert, and I designed `xhci_rhport_reg()` from
+first-principles reasoning about the xHCI port-pairing model rather than
+copying a verified reference implementation (unlike patches 1+2, which
+were checked against upstream NetBSD source directly). Needs a real
+SuperSpeed device plugged into the CM4 to know if this actually works.
