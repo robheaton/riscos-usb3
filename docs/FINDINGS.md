@@ -720,3 +720,24 @@ ports 2, 3, 4 (via new `XHCIDRIVER_RH_SS_SKIP=1`, `RH_EXTRA_SS=3`).
 If this crashes too: it's the count. If it's fine: the 4th SS port
 specifically (or something about being the last one skipped by every
 previous round) is implicated.
+
+## Bisection conclusion (2026-09-25): it's the count, not a specific port
+
+Round 4 (ports 2,3,4 exposed, port 1 skipped, still 4 total) also booted
+clean with the stick present. Two different 4-port subsets both safe;
+only exposing all 4 SS ports (5 total, matching `sc_maxports` exactly)
+crashes. Rules out "one specific SS port is bad hardware" -- this is
+about the *count* reaching the controller's full port total, not the
+identity of which ports are included.
+
+Live bisection has told us what it usefully can without crash-site
+symbols: safe for any subset, unsafe only at the full set. Continuing to
+guess blind at *why* "bNbrPorts == sc_maxports" specifically matters
+isn't a good use of more reboot cycles. Next step is the debug build
+(with real symbols/trace) the user is investigating separately -- that
+should turn "safe up to 4, crashes at 5" into an actual line of code.
+
+Current shipped state (`XHCIDRIVER_RH_SS_SKIP=1`, `RH_EXTRA_SS=3`, 4 of 5
+ports exposed) is a known-safe bisection artifact, not the real fix --
+worth remembering to swap back once the debug build finds the actual
+cause, rather than mistaking "4 works" for "problem solved."
