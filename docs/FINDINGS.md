@@ -619,3 +619,38 @@ Not yet re-tested on hardware. This is the most consequential and least
 independently-verified change so far — no upstream reference to check it
 against (this is RISC OS's own root hub emulation, not NetBSD-derived),
 and it directly contradicts the mental model patches 3/4 were built on.
+
+## Reverted the bNbrPorts=5 change (2026-09-25): boot-time crash on real hardware
+
+The "real fix" above caused a reproducible Data Abort at boot on the Pi 4,
+confirmed via `*Where`: `USBDriver` module, offset `&2B28`. Deterministic
+across reboots, not a one-off. Root cause not isolated yet — my leading
+guess is something in `uhub_explore()`'s port-reset/discovery path
+choking when it processes the 4 newly-visible, genuinely-unconnected SS
+ports for the first time ever (that code path had literally never run
+before, on any hardware, since `bNbrPorts` had always been 1), but this
+is a guess, not a confirmed diagnosis.
+
+Separately: even on the successful (non-crashing) first boot with that
+change, the flash drive's `Raw port status (diag)` was **byte-for-byte
+identical** (`0x0503`) to every previous test — meaning it was still
+attaching via the same HS-behind-hub path regardless of the port-range
+fix. So even without the crash, this specific device on this specific
+board's sockets may never be able to validate the SS path at all — it
+appears to be physically wired through port 1 (the HS-grouped,
+hub-fronted port) no matter which "USB3" socket is used.
+
+Reverted `xhci_rhpsc()`, `xhci_rhport_reg()`, `hubd.bNbrPorts`, and the
+two bounds checks I'd widened, all back to their exact pre-2026-09-25
+state (verified line-by-line against what shipped in patch 3). Kept the
+diagnostic fields (`diag_pstatus`, `diag_hs/ss_start/count`,
+`Hub port count (diag)`) since those were proven safe in the round before
+this one and remain useful for whenever this gets picked back up.
+
+**Status**: back to a known-working, boot-safe state. The "root hub only
+advertises 1 of N real ports" bug is real and confirmed (not undone by
+this revert — the diagnosis stands, just the fix for it is reverted
+pending figuring out why it crashes). Next session should start by trying
+to narrow down the `USBDriver+&2B28` crash before re-attempting the
+bNbrPorts fix — ideally with a symbol/debug build so the offset resolves
+to a source line instead of requiring another round of guessing.
