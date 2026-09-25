@@ -703,3 +703,9 @@ trigger it, or if it takes closer to all 4.
 drifting apart on the next bisection round). Set to `2`: exposes HS port
 + first 2 SS ports = 3 total. Next test: same as before, stick plugged in
 at power-on, see if it boots or reproduces the crash.
+
+## Bisection round 3 (2026-09-25): 4 ports
+
+3 ports (HS + 2 SS) also booted clean with the stick present -- crash
+boundary is somewhere between 3 and 5 exposed ports. `XHCIDRIVER_RH_EXTRA_SS`
+bumped to 3 (HS + 3 SS = 4 total, one short of the full crashing set).
