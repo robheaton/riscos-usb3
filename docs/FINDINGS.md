@@ -465,3 +465,43 @@ unconditional `printf` instrumentation:
 
 Waiting on a rebuild + `*usbdevinfo 4` capture to see the raw register
 ground truth.
+
+## Diagnostic v2 (2026-09-25): my printf approach didn't work, switched strategy
+
+Learned two things from the failed attempt to capture `xhci_rhport_reg`'s
+printf output:
+
+1. `*usbdevices`/`*usbdevinfo` only print already-cached data from when a
+   device was originally discovered — they never re-trigger a root hub
+   port query. Asking to rerun them after the diagnostic build was based
+   on a wrong assumption; my mistake.
+2. RISC OS on this Pi doesn't show a visible boot text console (no splash
+   screen text before the desktop), and hotplug (unplug/replug) doesn't
+   visibly trigger anything either — so there was no window in which the
+   `printf`-based diagnostic could ever be observed, even though the code
+   almost certainly *did* run once already, during the original boot-time
+   discovery that got the device classified as `High` in the first place.
+
+Switched strategy to something self-contained in `USBDriver` (a codebase
+already proven to build and produce visible `*command` output reliably in
+a desktop Task Window), instead of anything in `XHCIDriver`:
+
+- Added a temporary `diag_pstatus` field to `struct usbd_device`
+  (`usbdivar.h`) — zero-initialised for free, since the struct is already
+  `memset` on allocation.
+- `uhub_explore()` now stashes the raw `wPortStatus` word it decoded
+  `speed` from into the newly-created device's `diag_pstatus`, right after
+  `usbd_new_device()` returns (`up->device` is already valid by then).
+- `*USBDevInfo <n>`'s existing handler (`command_devinfo` in
+  `build/c/usbmodule`) now prints that raw value as an extra
+  `Raw port status (diag)` line.
+
+This sidesteps the whole console-visibility problem: the value is captured
+once at the device's original discovery (whenever that was) and stays
+readable any time afterward through a command already proven to work.
+If the low byte's bits 9:10 read `11` (i.e. `0x0600`/`0x0400`-ish region,
+watch for `& 0x0600 == 0x0600`), the hardware genuinely reported
+SuperSpeed and the decode bug is still downstream somewhere; if those bits
+read `10` (`0x0400`, plain `UPS_HIGH_SPEED`), the port never linked at SS
+at the hardware level at all — real electrical/negotiation limitation, not
+a decode bug.
