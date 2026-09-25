@@ -435,3 +435,33 @@ path patch 3 already changed, so as not to conflate two untested behaviors
 before patch 3 gets its first real xHCI hardware test. Not yet tested on
 any hardware — needs an external SuperSpeed hub with a device behind it,
 which is a rarer test setup than a bare USB3 flash drive.
+
+## Diagnostic build (2026-09-25): Pi 400 shows High speed on both USB3 ports
+
+Real hardware test on a Pi 400 (not the CM4 — different xHCI implementation,
+`VIA XHCI root hub` rather than the CM4's controller): `*usbdevices` shows
+Bus 2 (XHCI) present and working, but a `VIA Labs USB2.0 Hub` (device 3) is
+always enumerated, and the SSK USB3.2 flash drive always reports
+`Speed: High` regardless of which of the two USB3 ports it's plugged into
+— identical device numbering both times (hub=3, flash drive=4, mouse
+dongle=5, keyboard=6).
+
+Couldn't determine from `*usbdevices`/`*usbbuses` alone whether the flash
+drive is topologically a child of that USB2.0 hub (in which case `High` is
+the *correct* answer — real hardware limitation, nothing to fix) or a
+sibling directly on the root hub (in which case it's a bug in patch 3/4).
+No built-in RISC OS command exposes hub/device parent-child topology.
+
+Added temporary (not committed as a real patch — for diagnosis only)
+unconditional `printf` instrumentation:
+- In `xhci_init()`: dumps `sc_hs_port_start/count` and
+  `sc_ss_port_start/count` once at boot, to sanity-check the extended
+  capability parsing on this specific (VIA) xHCI implementation.
+- In `xhci_rhport_reg()`: dumps both the SS-side and HS-side `PORTSC`
+  register values (and their CCS bits) every time a root hub port is
+  queried, which happens on every `*usbdevices`/`*usbdevinfo` call — so
+  output appears directly alongside those commands' own output, no special
+  log capture needed.
+
+Waiting on a rebuild + `*usbdevinfo 4` capture to see the raw register
+ground truth.
