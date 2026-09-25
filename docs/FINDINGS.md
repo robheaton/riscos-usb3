@@ -681,3 +681,16 @@ Not yet tested. `GET_STATUS`'s bound was left as the pre-existing
 `sc_maxports` (unrelated to this experiment, was already that way before
 any of my changes) since no code path generates a request outside
 `1..bNbrPorts` regardless of how permissive that check is.
+
+## Bisection result 1 (2026-09-25): 2 ports is safe, even with the stick at boot
+
+Booted clean, stick recognised (still `High`, as expected -- this stick
+is wired through port 1's internal hub regardless of SS port count, so
+it can't validate the SS path either way, established earlier). No crash
+with `XHCIDRIVER_RHNPORTS` = 2 (HS port + first SS port only), stick
+plugged in at power-on -- the exact condition that crashed at 5 ports.
+
+Confirms: the crash needs *multiple* newly-exposed empty SS ports live
+at once. A single extra port is safe. Narrowing further: next build
+exposes 3 ports (HS + first 2 SS ports) to see if 2 extra is enough to
+trigger it, or if it takes closer to all 4.
