@@ -709,3 +709,14 @@ at power-on, see if it boots or reproduces the crash.
 3 ports (HS + 2 SS) also booted clean with the stick present -- crash
 boundary is somewhere between 3 and 5 exposed ports. `XHCIDRIVER_RH_EXTRA_SS`
 bumped to 3 (HS + 3 SS = 4 total, one short of the full crashing set).
+
+## Bisection round 4 (2026-09-25): same count (4), different port skipped
+
+2/3/4 ports (always taking the *first* N SS ports) all booted clean with
+the stick present; only 5 (all 4 SS ports) crashed. To tell apart "it's
+the total count" from "it's specifically that 4th SS port," this round
+keeps the total at 4 but skips the *first* SS port instead, exposing SS
+ports 2, 3, 4 (via new `XHCIDRIVER_RH_SS_SKIP=1`, `RH_EXTRA_SS=3`).
+If this crashes too: it's the count. If it's fine: the 4th SS port
+specifically (or something about being the last one skipped by every
+previous round) is implicated.
