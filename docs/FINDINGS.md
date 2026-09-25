@@ -694,3 +694,12 @@ Confirms: the crash needs *multiple* newly-exposed empty SS ports live
 at once. A single extra port is safe. Narrowing further: next build
 exposes 3 ports (HS + first 2 SS ports) to see if 2 extra is enough to
 trigger it, or if it takes closer to all 4.
+
+## Bisection round 2 (2026-09-25): 3 ports
+
+`XHCIDRIVER_RH_EXTRA_SS` now a single named constant near the top of
+`xhci.c` (was duplicated/hand-synced across `xhci_rhpsc()` and
+`xhci_rhport_reg()` in the 2-port build -- consolidated to avoid the two
+drifting apart on the next bisection round). Set to `2`: exposes HS port
++ first 2 SS ports = 3 total. Next test: same as before, stick plugged in
+at power-on, see if it boots or reproduces the crash.
