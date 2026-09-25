@@ -505,3 +505,65 @@ SuperSpeed and the decode bug is still downstream somewhere; if those bits
 read `10` (`0x0400`, plain `UPS_HIGH_SPEED`), the port never linked at SS
 at the hardware level at all — real electrical/negotiation limitation, not
 a decode bug.
+
+## Real-hardware result and a walked-back conclusion (2026-09-25)
+
+`Raw port status (diag)` on the Pi 400 came back `0x0503`: bit 0 (connect),
+bit 1 (enabled), bit 8 (power), and bit 10 only of the speed field — the
+exact `UPS_HIGH_SPEED` pattern (`0x0400`), not `UPS_SUPER_SPEED` (`0x0600`,
+which needs bits 9 *and* 10). A clean, unambiguous "genuinely High Speed"
+status word, not a decode error.
+
+But this status came from a *real* hub device (`VIA Labs USB2.0 Hub`, per
+the `!USBDescriptors` topology tree, likely the VL805's own embedded
+USB2-only hub function — "VIA Labs" is literally the VL805's manufacturer)
+— not from `xhci_rhport_reg()` at all. That code only runs for devices
+attached directly to the fake root hub; this device is a grandchild via a
+real intervening hub, so none of patches 3/4 were exercised by this test.
+Initially read this as "nothing to fix, real hardware limit" and said so.
+
+**That conclusion doesn't survive the follow-up test.** Repeated on a Pi 4
+(different board, though same VL805 chip family) with the flash drive in
+a blue USB3 port: identical topology shape — still routed through an
+internal `USB2.0 Hub` node. Pi4's blue ports are documented (Raspberry Pi
+forums) as wiring SuperSpeed lanes *directly* to the xHCI root hub,
+bypassing the internal hub entirely — only the HS/FS/LS *fallback*
+signaling for those same physical ports still goes through that hub. That
+matters: a USB3 device whose SS link training fails for any reason falls
+back to HS-only operation, and when it does, it's indistinguishable from a
+genuinely-2.0-only port in the topology tree — both show "behind the
+internal hub, reporting High". Seeing this exact shape on two different
+real controllers is a real signal that SS link training probably isn't
+completing, not proof the boards are hardware-limited.
+
+Un-answered so far: is the flash drive/cable itself flaky, or is
+`xhci_init()`'s change insufficient to actually establish an SS link
+(vs. just "no longer actively preventing" one)? Asked for a second
+USB3 device/cable to rule out a device-specific issue.
+
+## Diagnostic v3: root hub's own advertised port count
+
+Went back to an earlier, still-unconfirmed hypothesis: `XHCIDriver`'s fake
+root hub descriptor reports `bNbrPorts = sc->sc_hs_port_count` — only the
+HS-grouped port range. If `hs_port_count` and `ss_port_count` differ on
+real hardware (plausible: an embedded 2.0 hub consolidating several
+physical ports' HS lines into one upstream port, while only some of those
+same physical ports have genuine SS lanes wired separately), the root hub
+could be silently under-reporting its own port count, making any SS-only
+port structurally invisible to `uhub_explore()` regardless of anything
+`xhci_rhport_reg()` does.
+
+Extended the same working diagnostic technique (no printf, stash into
+existing structs, read back via `*USBDevInfo`) to check this directly:
+- `struct usbd_bus` (`usbdivar.h`) gets four new temporary fields:
+  `diag_hs_start/count`, `diag_ss_start/count`.
+- `xhci_init()` populates them right where the (unreachable) printf used
+  to be try to report them.
+- `command_devinfo` (`USBDriver`) now prints them for any device, plus a
+  `Hub port count (diag)` line showing `hub->hubdesc.bNbrPorts` for any
+  hub-class device queried — including the root hub itself, since it's
+  device-numbered like any other hub in `*usbdevices`.
+
+Next: run `*usbdevinfo` on the root hub entry itself (`VIA XHCI root hub`,
+device 2 in the `*usbdevices` listing) to see its self-reported port
+count against the real `hs_count`/`ss_count` split.
