@@ -741,3 +741,22 @@ Current shipped state (`XHCIDRIVER_RH_SS_SKIP=1`, `RH_EXTRA_SS=3`, 4 of 5
 ports exposed) is a known-safe bisection artifact, not the real fix --
 worth remembering to swap back once the debug build finds the actual
 cause, rather than mistaking "4 works" for "problem solved."
+
+## Separate, confirmed (but probably unrelated) bug found while searching
+
+`struct uhub_softc` in `uhub.c`:
+```c
+u_int8_t sc_status[1]; /* XXX more ports */
+```
+Self-flagged by the original author as a known limitation — a 1-byte
+interrupt-pipe status bitmap only supports hubs with up to 7 ports
+(1 hub-status bit + 7 port-change bits) before running out of space.
+Real, confirmed, worth fixing eventually for any hub with more physical
+ports than that.
+
+Checked the bit math against tonight's crash threshold (safe at 4 ports,
+crashes at 5): doesn't fit as the explanation. Every port index we've
+used (up to 5) still lives entirely within that single byte's 8 bits, so
+this shouldn't be what's overflowing right at that boundary. Noted here
+so it doesn't get lost, but the actual crash cause is still open --
+debug build remains the right next step.
