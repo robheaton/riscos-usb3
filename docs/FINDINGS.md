@@ -654,3 +654,30 @@ pending figuring out why it crashes). Next session should start by trying
 to narrow down the `USBDriver+&2B28` crash before re-attempting the
 bNbrPorts fix — ideally with a symbol/debug build so the offset resolves
 to a source line instead of requiring another round of guessing.
+
+## Bisection experiment (2026-09-25): expose 2 ports, not 5
+
+While the user investigates a debug build separately, agreed to try a
+narrower version of the crashing change rather than more guessing at the
+full fix: root hub now exposes exactly `sc_hs_port_count + 1` ports
+(2 on the test Pi4: the HS port, plus only the *first* SS-grouped port)
+instead of all `sc_maxports` (5). If this boots fine, the crash is
+specific to having several/all SS ports live at once (state exhaustion,
+some fixed-size assumption breaking past 2 ports, etc.) rather than "any
+newly-exposed port is unsafe" — informative either way.
+
+Changes, all gated through one new macro `XHCIDRIVER_RHNPORTS(sc)`
+(`sc_hs_port_count + (sc_ss_port_count > 0 ? 1 : 0)`) so the four sites
+that need to agree on the port count can't drift apart:
+- `hubd.bNbrPorts`
+- `CLEAR_FEATURE`/`SET_FEATURE` bounds checks
+- `xhci_rhport_reg()`: index `<= hs_port_count` maps to the HS range as
+  before; the one extra index maps to `sc_ss_port_start` specifically
+  (the first SS port), not a range
+- `xhci_rhpsc()`: accepts port-status-change events for the HS range
+  (as before) plus specifically `port == sc_ss_port_start`
+
+Not yet tested. `GET_STATUS`'s bound was left as the pre-existing
+`sc_maxports` (unrelated to this experiment, was already that way before
+any of my changes) since no code path generates a request outside
+`1..bNbrPorts` regardless of how permissive that check is.
