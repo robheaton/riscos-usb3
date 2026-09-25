@@ -567,3 +567,55 @@ existing structs, read back via `*USBDevInfo`) to check this directly:
 Next: run `*usbdevinfo` on the root hub entry itself (`VIA XHCI root hub`,
 device 2 in the `*usbdevices` listing) to see its self-reported port
 count against the real `hs_count`/`ss_count` split.
+
+## The real fix (2026-09-25): root hub was only ever advertising 1 of 5 ports
+
+Confirmed on the Pi 4: `Hub port count (diag): 1`, `HC HS ports: start=1
+count=1`, `HC SS ports: start=2 count=4`. Not a coincidence, not a
+board-specific quirk — this VL805 configuration genuinely has 1
+HS-grouped port and 4 separate SS-grouped ports, not matched pairs. My
+whole premise for `xhci_rhport_reg()` (patch 3) — that a physical port
+pair shares one root-hub index with two candidate registers to
+disambiguate — was wrong. There's no general 1:1 pairing guarantee in the
+xHCI spec; the HS and SS "Supported Protocol" capabilities just partition
+the *same* 1..sc_maxports logical port space into two subranges, of
+possibly different sizes.
+
+Three bugs, now fixed, all stemming from the same wrong assumption:
+
+1. **`hubd.bNbrPorts = sc->sc_hs_port_count`** (pre-existing, not something
+   any of my earlier patches touched) → now `sc->sc_maxports`. This was
+   the root cause: the fake root hub descriptor told the rest of the OS
+   there was only one port, full stop, so `uhub_explore()` could
+   structurally never even ask about the other four.
+2. **`xhci_rhport_reg()`** simplified drastically: no more SS/HS
+   disambiguation logic at all. With `bNbrPorts` now reporting the full
+   range, each root hub port index directly *is* an xHCI port number
+   (`return XHCI_PORTSC(index);`) — no guessing needed, because there's no
+   pairing to guess between.
+3. **`xhci_rhpsc()`, the port status change *interrupt* handler** — found
+   while double-checking for other HS-only assumptions after the above.
+   This one's arguably worse: it explicitly filtered to
+   `port >= sc_hs_port_start && port < sc_hs_port_start + sc_hs_port_count`
+   and silently dropped the event otherwise. Even with bug 1 fixed, a
+   real hardware connect event on any of the 4 SS-grouped ports would
+   have been thrown away here before `uhub_explore()` ever got a chance
+   to run. Now bounds-checks against the full `sc_maxports` range instead.
+
+Also fixed two pre-existing, inconsistent bounds checks
+(`CLEAR_FEATURE`/`SET_FEATURE` used `sc_hs_port_count`, `GET_STATUS`
+already correctly used `sc_maxports` — the inconsistency between the
+three should have been a hint something was off, in hindsight).
+
+This fully explains both real-hardware test results: the flash drive was
+never actually behind a hardware-limited hub at all on either board — it
+was very likely plugged into a genuinely SS-capable port both times, but
+the change event either got dropped (`xhci_rhpsc`) or, even if noticed,
+the root hub's own port count (`bNbrPorts`) meant it would never be
+explored. What looked like "device falls back to HS behind a real hub" was
+actually "device's connection on a real SS port was never even looked at."
+
+Not yet re-tested on hardware. This is the most consequential and least
+independently-verified change so far — no upstream reference to check it
+against (this is RISC OS's own root hub emulation, not NetBSD-derived),
+and it directly contradicts the mental model patches 3/4 were built on.
