@@ -50,11 +50,15 @@ outside the RISC OS DDE; every change was built and tried by hand on hardware
    registers. Run it with the stick out, with it in a blue socket, and after
    an unplug/replug (it is a live read, so it works even though the stack
    doesn't notice hotplug).
-2. **What is at `USBDriver +&2B28`?** Reboot the 5-port build (set
-   `XHCIDRIVER_RH_SS_SKIP` to 0 and `XHCIDRIVER_RH_EXTRA_SS` to 4 at the top
-   of `c/xhci`) and at the `*` prompt after the abort run `*ShowRegs`,
-   `*MemoryI PC-20 + 40` and `*MemoryI R14-20 + 40`. Or send the exact built
-   module and use `tools/armdis.py` on it.
+2. **What is at `USBDriver +&2B28`?** Build the 5-port configuration
+   (`tools/export-files.sh 5port`, which sets `XHCIDRIVER_RH_SS_SKIP` to 0 and
+   `XHCIDRIVER_RH_EXTRA_SS` to 4 in the exported `c/xhci`) and at the `*`
+   prompt after the abort run `*ShowRegs`, `*MemoryI PC-20 + 40` and
+   `*MemoryI R14-20 + 40`. The module's code layout changes with every
+   rebuild, so expect a different offset from `&2B28`. Also try
+   `*usbdevinfo <xHCI root hub>` there: it now dumps the live PORTSC of all
+   five ports at the moment of the crash. Or send the exact built module and
+   use `tools/armdis.py` on it.
 3. Speed of the stick in the 3-port, 4-port and 4-port-skip-first rounds:
    only "boots, stick recognised" was recorded.
 4. Which Pi 4 socket the stick was in (blue?) -- never confirmed.
