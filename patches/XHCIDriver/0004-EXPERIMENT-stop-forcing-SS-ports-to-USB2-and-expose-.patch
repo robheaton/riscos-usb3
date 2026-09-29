@@ -1,0 +1,222 @@
+From 6d6068818fac17ad800573973c662d9846a13825 Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:37 +0100
+Subject: [PATCH 4/5] EXPERIMENT: stop forcing SS ports to USB2 and expose a
+ subset of SS root ports
+
+Not for upstream; bisection scaffolding. Three things:
+
+1. Remove the #ifdef RISCOS block in xhci_init() that disabled every
+   SuperSpeed port and forced it to renegotiate as USB2/USB1. NB: with
+   only the HS-grouped port(s) exposed by the emulated root hub, a device
+   that links at SuperSpeed becomes invisible instead of falling back.
+
+2. The emulated root hub advertised bNbrPorts = sc_hs_port_count and
+   xhci_rhpsc() dropped status-change events outside the HS range. On a
+   Pi 4 (VL805) that is 1 HS port and 4 SS ports, so the SS ports were
+   invisible. XHCIDRIVER_RH_SS_SKIP / XHCIDRIVER_RH_EXTRA_SS choose which
+   SS ports are exposed after the HS range, via xhci_rhport_reg().
+   Exposing all four (bNbrPorts == sc_maxports == 5) crashes USBDriver at
+   boot when a device is present (see docs/FINDINGS.md); any subset up to
+   four ports boots. Currently set to skip 1 / expose 3.
+
+3. Stash the HS/SS port ranges in struct usbd_bus for *USBDevInfo.
+
+Known wrong here: the root hub port *index* is passed as the slot
+context's Root Hub Port Number (xhci_new_device_common), which is only the
+xHCI port number for identity-mapped exposure (SKIP=0).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ c/xhci | 112 +++++++++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 89 insertions(+), 23 deletions(-)
+
+diff --git a/c/xhci b/c/xhci
+index 4d1e33d..6c2987c 100644
+--- a/c/xhci
++++ b/c/xhci
+@@ -82,6 +82,20 @@ __KERNEL_RCSID(0, "$NetBSD: xhci.c,v 1.29 2015/08/19 06:23:35 skrll Exp $");
+ #include "xhcimodule.h"
+ #endif
+ 
++/*
++ * BISECTION EXPERIMENT 2026-09-25: how many SS-grouped ports the root
++ * hub exposes on top of the HS range, and how many (from
++ * sc_ss_port_start) to skip first -- used by both xhci_rhpsc() and
++ * xhci_rhport_reg()/xhci_root_ctrl_start below, which must agree on
++ * this or a connected device on an exposed-but-unaccepted port would go
++ * unnoticed. 2/3/4 total ports (SKIP=0, EXTRA=1/2/3) all booted clean
++ * with a device present at boot; only 5 (all 4 SS, SKIP=0 EXTRA=4)
++ * crashed. Now testing SKIP=1 EXTRA=3 (skip the 1st SS port, include
++ * the other 3) to see whether it's the total count or specifically that
++ * one port. See FINDINGS.md.
++ */
++#define XHCIDRIVER_RH_SS_SKIP 1
++#define XHCIDRIVER_RH_EXTRA_SS 3
+ 
+ #ifdef USB_DEBUG
+ #ifndef XHCI_DEBUG
+@@ -193,6 +207,8 @@ static void xhci_ring_free(struct xhci_softc * const, struct xhci_ring * const);
+ 
+ static void xhci_noop(usbd_pipe_handle);
+ 
++static int xhci_rhport_reg(struct xhci_softc *, int);
++
+ static usbd_status xhci_root_ctrl_transfer(usbd_xfer_handle);
+ static usbd_status xhci_root_ctrl_start(usbd_xfer_handle);
+ static void xhci_root_ctrl_abort(usbd_xfer_handle);
+@@ -887,14 +903,21 @@ xhci_init(struct xhci_softc *sc)
+ 	config |= sc->sc_maxslots & 0xFF;
+ 	xhci_op_write_4(sc, XHCI_CONFIG, config);
+ 
+-#ifdef RISCOS
+-	/* Disable any SuperSpeed ports since no USB3 yet */
+-	for (i = 0; i < sc->sc_ss_port_count; i++) {
+-		int port = XHCI_PORTSC(sc->sc_ss_port_start + i);
+-		/* Disable port then force RxDetect state to redo link as UBS2 or USB1 */
+-		xhci_op_write_4(sc, port, XHCI_PS_PLS_SET(5) | XHCI_PS_PED);
+-	}
+-#endif
++	/* TEMPORARY DIAGNOSTIC -- remove once SS detection is confirmed.
++	 * Stashed on sc_bus rather than relying on printf, since printf
++	 * output from this early in boot isn't visible on this hardware --
++	 * readable later via *USBDevInfo on the root hub device instead. */
++	sc->sc_bus.diag_hs_start = sc->sc_hs_port_start;
++	sc->sc_bus.diag_hs_count = sc->sc_hs_port_count;
++	sc->sc_bus.diag_ss_start = sc->sc_ss_port_start;
++	sc->sc_bus.diag_ss_count = sc->sc_ss_port_count;
++
++	/*
++	 * SuperSpeed ports are left to link at whatever speed the attached
++	 * device negotiates. Root hub emulation (xhci_rhport_reg()) picks
++	 * whichever side of a port pair is actually connected, and the
++	 * USBDriver core (uhub.c) now understands UPS_SUPER_SPEED.
++	 */
+ 
+ 	err = xhci_ring_init(sc, &sc->sc_cr, XHCI_COMMAND_RING_TRBS,
+ 	    XHCI_COMMAND_RING_SEGMENTS_ALIGN);
+@@ -1562,13 +1585,32 @@ xhci_rhpsc(struct xhci_softc * const sc, u_int port)
+ 	if (xfer == NULL)
+ 		return;
+ 
+-	if (!(port >= sc->sc_hs_port_start &&
+-	    port < sc->sc_hs_port_start + sc->sc_hs_port_count))
+-		return;
+-
+-	port -= sc->sc_hs_port_start;
+-	port += 1;
+-	DPRINTFN(4, "hs port %u status change", port, 0, 0, 0);
++	/*
++	 * BISECTION EXPERIMENT 2026-09-25: see XHCIDRIVER_RH_SS_SKIP /
++	 * XHCIDRIVER_RH_EXTRA_SS. Duplicates the RHAVAIL/RHEXTRA logic near
++	 * xhci_rhport_reg() by hand (can't use those macros -- they're
++	 * defined later in the file); keep both in sync when tuning either
++	 * constant.
++	 */
++	{
++		int avail = (sc->sc_ss_port_count > XHCIDRIVER_RH_SS_SKIP) ?
++		    (sc->sc_ss_port_count - XHCIDRIVER_RH_SS_SKIP) : 0;
++		int extra = (avail < XHCIDRIVER_RH_EXTRA_SS) ?
++		    avail : XHCIDRIVER_RH_EXTRA_SS;
++		u_int ss_lo = sc->sc_ss_port_start + XHCIDRIVER_RH_SS_SKIP;
++
++		if (port >= sc->sc_hs_port_start &&
++		    port < sc->sc_hs_port_start + sc->sc_hs_port_count) {
++			port -= sc->sc_hs_port_start;
++			port += 1;
++		} else if (extra > 0 && port >= ss_lo &&
++		    port < ss_lo + extra) {
++			port = sc->sc_hs_port_count + 1 + (port - ss_lo);
++		} else {
++			return;
++		}
++	}
++	DPRINTFN(4, "root hub port %u status change", port, 0, 0, 0);
+ 
+ 	p = KERNADDR(&xfer->dmabuf, 0);
+ 	memset(p, 0, xfer->length);
+@@ -2913,6 +2955,30 @@ xhci_root_ctrl_transfer(usbd_xfer_handle xfer)
+ 	return (xhci_root_ctrl_start(SIMPLEQ_FIRST(&xfer->pipe->queue)));
+ }
+ 
++/*
++ * BISECTION EXPERIMENT 2026-09-25: XHCIDRIVER_RH_SS_SKIP/RH_EXTRA_SS
++ * (defined near the top of this file) control which SS-grouped ports
++ * get exposed here on top of the HS range. See their comment for
++ * context.
++ */
++#define XHCIDRIVER_RHAVAIL(sc) \
++	(((sc)->sc_ss_port_count > XHCIDRIVER_RH_SS_SKIP) ? \
++	    ((sc)->sc_ss_port_count - XHCIDRIVER_RH_SS_SKIP) : 0)
++#define XHCIDRIVER_RHEXTRA(sc) \
++	((XHCIDRIVER_RHAVAIL(sc) < XHCIDRIVER_RH_EXTRA_SS) ? \
++	    XHCIDRIVER_RHAVAIL(sc) : XHCIDRIVER_RH_EXTRA_SS)
++#define XHCIDRIVER_RHNPORTS(sc) \
++	((sc)->sc_hs_port_count + XHCIDRIVER_RHEXTRA(sc))
++
++static int
++xhci_rhport_reg(struct xhci_softc *sc, int index)
++{
++	if (index <= sc->sc_hs_port_count)
++		return XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++	return XHCI_PORTSC(sc->sc_ss_port_start + XHCIDRIVER_RH_SS_SKIP +
++	    (index - sc->sc_hs_port_count) - 1);
++}
++
+ static usbd_status
+ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ {
+@@ -3079,11 +3145,11 @@ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ 	case C(UR_CLEAR_FEATURE, UT_WRITE_CLASS_OTHER):
+ 		DPRINTFN(4, "UR_CLEAR_PORT_FEATURE port=%d feature=%d",
+ 			     index, value, 0, 0);
+-		if (index < 1 || index > sc->sc_hs_port_count) {
++		if (index < 1 || index > XHCIDRIVER_RHNPORTS(sc)) {
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		port = XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++		port = xhci_rhport_reg(sc, index);
+ 		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "portsc=0x%08x", v, 0, 0, 0);
+ 		v &= ~XHCI_PS_CLEAR;
+@@ -3125,7 +3191,7 @@ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ 			goto ret;
+ 		}
+ 		hubd = xhci_hubd;
+-		hubd.bNbrPorts = sc->sc_hs_port_count;
++		hubd.bNbrPorts = XHCIDRIVER_RHNPORTS(sc);
+ 		USETW(hubd.wHubCharacteristics, UHD_PWR_NO_SWITCH);
+ 		hubd.bPwrOn2PwrGood = 200;
+ 		for (i = 0, l = sc->sc_maxports; l > 0; i++, l -= 8)
+@@ -3153,10 +3219,10 @@ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		v = xhci_op_read_4(sc, XHCI_PORTSC(sc->sc_hs_port_start - 1 +
+-		    index));
++		port = xhci_rhport_reg(sc, index);
++		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "READ_CLASS_OTHER GET_STATUS PORTSC %d (%d) %08x",
+-		    index, sc->sc_hs_port_start - 1 + index, v, 0);
++		    index, port, v, 0);
+ 		switch (XHCI_PS_SPEED_GET(v)) {
+ 		case 1:
+ 			i = UPS_FULL_SPEED;
+@@ -3197,11 +3263,11 @@ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ 	case C(UR_SET_FEATURE, UT_WRITE_CLASS_DEVICE):
+ 		break;
+ 	case C(UR_SET_FEATURE, UT_WRITE_CLASS_OTHER):
+-		if (index < 1 || index > sc->sc_hs_port_count) {
++		if (index < 1 || index > XHCIDRIVER_RHNPORTS(sc)) {
+ 			err = USBD_IOERROR;
+ 			goto ret;
+ 		}
+-		port = XHCI_PORTSC(sc->sc_hs_port_start - 1 + index);
++		port = xhci_rhport_reg(sc, index);
+ 		v = xhci_op_read_4(sc, port);
+ 		DPRINTFN(4, "portsc=0x%08x", v, 0, 0, 0);
+ 		v &= ~XHCI_PS_CLEAR;
+-- 
+2.53.0
+

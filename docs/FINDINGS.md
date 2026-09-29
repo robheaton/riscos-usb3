@@ -3,7 +3,101 @@
 Source: live clones of the ROOL gitlab repos (see README for clone commands),
 inspected 2026-09-23. Commit hashes below are what was current at that time.
 
-## TL;DR
+## Current state (2026-09-29)
+
+**Groundwork for SuperSpeed is in `USBDriver` and `XHCIDriver`, but no device
+has yet been seen running at SuperSpeed, and exposing all of the Pi 4's
+SuperSpeed root ports crashes `USBDriver` at boot.** Nothing has been compiled
+outside the RISC OS DDE; every change was built and tried by hand on hardware
+(CM4, Pi 400, Pi 4). The code is the `git format-patch` series in `patches/`
+(see the README for how to apply it).
+
+### Established
+
+| Fact | Basis |
+|---|---|
+| `XHCIDriver` drives xHCI on Pi 4 / Titanium, and originally forced every SuperSpeed port down to USB2/1 in `xhci_init()` | source |
+| The core `USBDriver` is NetBSD 2004/05 vintage: no `USBREV_3_0`, no SS endpoint-companion or SS-hub-descriptor handling | source, `$NetBSD` tags |
+| The `USB3:` commits build, and USB2 devices keep working on CM4 (DWC2 only), Pi 400 and Pi 4 (xHCI) | built and run on hardware |
+| Pi 4 (VL805): HS-grouped root ports `start=1 count=1`, SS-grouped `start=2 count=4` -- not matched pairs | hardware (`*USBDevInfo` diagnostic) |
+| The emulated root hub advertised `bNbrPorts = hs_port_count` (1), and `xhci_rhpsc()` ignored status changes outside the HS range, so the SS ports were invisible to the stack | source; port counts from hardware |
+| Exposing all 4 SS ports (5 root ports) crashes `USBDriver` at boot (Data Abort, `USBDriver +&2B28`) when a device is plugged in. 2, 3 and 4 exposed ports boot (4 tried two ways: SS ports 1-3 and 2-4), and 5 ports with nothing plugged in boots | hardware, six configurations |
+| In every build where the speed was checked, the USB3.2 stick attached at **High** speed behind the VL805's internal USB2 hub (raw port status `0x0503`) | hardware |
+| Unplugging and replugging the stick is not noticed on the xHCI bus | hardware |
+| DWC, EHCI, OHCI and MUSB drivers do not use `usbd_endpoint.datatoggle`/`refcnt`, the fields whose offsets patch 1 shifted | source |
+
+### Retracted or superseded
+
+- *"Physical ports come as matched HS/SS pairs"* (the design behind the
+  original `xhci_rhport_reg()`): false on this hardware. That code is gone.
+- *"High speed is the hardware-limited, correct answer"*: not established.
+  The VL805's internal hub carries only the USB2 half of each port; a device
+  that linked at SuperSpeed would not appear behind it.
+- *"Exposing every port (`bNbrPorts = sc_maxports`) is the real fix"*: it
+  crashes at boot. Reverted; only the diagnosis stands.
+- *"`printf` in `xhci.c` gives a usable diagnostic"*: never visible on this
+  hardware.
+- The *Rough shape of the work* plan below: step 5 ("remove the downgrade hack
+  and set `usbrev`") is not sufficient. With the hack gone and the SS ports not
+  exposed, a device that does link at SuperSpeed would be expected to disappear
+  from the stack rather than fall back to USB2 (not observed: the stick has
+  never linked at SuperSpeed).
+
+### Open questions, in order of value
+
+1. **Does a SuperSpeed link ever train?** We have never read an SS port's
+   PORTSC. `*USBDevInfo` on any device of the xHCI bus now prints the live
+   registers. Run it with the stick out, with it in a blue socket, and after
+   an unplug/replug (it is a live read, so it works even though the stack
+   doesn't notice hotplug).
+2. **What is at `USBDriver +&2B28`?** Reboot the 5-port build (set
+   `XHCIDRIVER_RH_SS_SKIP` to 0 and `XHCIDRIVER_RH_EXTRA_SS` to 4 at the top
+   of `c/xhci`) and at the `*` prompt after the abort run `*ShowRegs`,
+   `*MemoryI PC-20 + 40` and `*MemoryI R14-20 + 40`. Or send the exact built
+   module and use `tools/armdis.py` on it.
+3. Speed of the stick in the 3-port, 4-port and 4-port-skip-first rounds:
+   only "boots, stick recognised" was recorded.
+4. Which Pi 4 socket the stick was in (blue?) -- never confirmed.
+5. `xhci_new_device_common()` passes the root hub *index* as the slot
+   context's Root Hub Port Number. That is the xHCI port number only when
+   exposure is identity-mapped; the unused upstream code adds the offset.
+6. The root hub emulation cannot report or clear SS-specific change bits
+   (link state, warm reset, config error) or issue a Warm Port Reset, so a
+   port that fails link training cannot be recovered.
+7. Patch 1 inserts `ecomp` mid-struct in `struct usbd_endpoint`. Checked: no
+   other host controller driver touches the shifted fields, so low risk, but
+   appending would still be cleaner.
+8. Unrelated: `struct uhub_softc.sc_status[1] /* XXX more ports */` limits
+   hubs to 7 ports.
+
+### Reading the live PORTSC lines
+
+`Port N: <PORTSC> ccs= ped= pp= pls= spd= chg= events= last=` -- `pls` is the
+link state (0 U0, 4 Disabled, 5 RxDetect, 6 Inactive, 7 Polling, 10
+Compliance), `spd` the port speed ID (1 FS, 2 LS, 3 HS, 4 SS), `chg` the
+change bits (CSC PEC WRC OCC PRC PLC CEC), `events` how many port status
+change events that port has raised, `last` its PORTSC when the latest fired.
+Port 1 is the HS-grouped port (the VL805's internal hub); ports 2-5 are the
+SS-grouped ones. With the stick in a blue socket:
+
+| SS port shows | Means |
+|---|---|
+| `ccs=0 pls=5` | nothing detected on the SS lanes: the stick isn't attempting SuperSpeed on this port (fell back to USB2, or those lanes aren't wired to this socket) |
+| `ccs=0 pls=4` | port is disabled: something is holding it down |
+| `pls=7` or `10` that persists | link training is struggling |
+| `pls=6`, `chg` has WRC/PLC | link training failed; would need a Warm Reset, which the root hub emulation can't do |
+| `ccs=1 ped=1 pls=0 spd=4` | linked at SuperSpeed: the problem is exposure/enumeration, not the link |
+| `events=0` on every port after plugging in | the controller isn't raising events for it |
+
+### To strip before anything goes upstream
+
+The `DIAG (temporary)` and `EXPERIMENT` commits in `patches/`; the `USB3:`
+commits are the keepers.
+
+Everything below is the chronological log, kept for the record. Sections
+marked SUPERSEDED contain conclusions that later evidence disproved.
+
+## Original TL;DR (2026-09-23; partly superseded)
 
 An xHCI host-controller driver **already exists and works** (`XHCIDriver`,
 v0.32, last touched Oct 2024, ported from NetBSD `xhci.c` rev 1.29 / 2015).
@@ -115,6 +209,9 @@ Grepped for and found **no trace of**, anywhere in `USBDriver`:
   reach (Titanium, PCIe cards) isn't blocked.
 
 ## Rough shape of the work, in dependency order
+
+> **SUPERSEDED in part** -- see *Current state*: step 5 is not sufficient on its own,
+> and the root hub emulation needs its own work before SS ports are visible.
 
 1. **Bring `usbdivar.h`'s revision enum and `USBREV_STR` up to date** —
    trivial on its own, but is the flag day marker for "the core knows USB3
@@ -337,6 +434,12 @@ any of this yet; stopped to report scope growth before continuing.
 
 ## Patch 3 (root-port-direct SS only, as agreed)
 
+> **SUPERSEDED** -- the port-pairing design below (`xhci_rhport_reg()` choosing
+> between an HS and an SS register by connect status) was wrong: this hardware has
+> 1 HS and 4 SS root ports, not pairs. Only the `case 4` speed decode and the
+> `uhub_explore` bit-overlap fix survive; the hack removal now lives in the
+> `EXPERIMENT` commit.
+
 Three changes, split as patches USBDriver/0003 and XHCIDriver/0002:
 
 1. **`xhci_init()`**: removed the `#ifdef RISCOS` port-downgrade loop
@@ -437,6 +540,9 @@ any hardware — needs an external SuperSpeed hub with a device behind it,
 which is a rarer test setup than a bare USB3 flash drive.
 
 ## Diagnostic build (2026-09-25): Pi 400 shows High speed on both USB3 ports
+
+> **SUPERSEDED** -- the `printf` instrumentation described here was never visible
+> and has been removed; see *Diagnostic v2* below for what replaced it.
 
 Real hardware test on a Pi 400 (not the CM4 — different xHCI implementation,
 `VIA XHCI root hub` rather than the CM4's controller): `*usbdevices` shows
@@ -569,6 +675,10 @@ device 2 in the `*usbdevices` listing) to see its self-reported port
 count against the real `hs_count`/`ss_count` split.
 
 ## The real fix (2026-09-25): root hub was only ever advertising 1 of 5 ports
+
+> **SUPERSEDED** -- the diagnosis (root hub advertises 1 of 5 ports) stands, but this
+> fix crashes at boot and was reverted; the title overstated it. See *Reverted* and
+> the bisection sections below.
 
 Confirmed on the Pi 4: `Hub port count (diag): 1`, `HC HS ports: start=1
 count=1`, `HC SS ports: start=2 count=4`. Not a coincidence, not a

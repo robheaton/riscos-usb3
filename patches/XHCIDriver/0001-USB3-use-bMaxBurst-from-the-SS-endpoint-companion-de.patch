@@ -1,3 +1,21 @@
+From 06bcfcf695d76af86b706b047582e7a58e73fdbf Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:25 +0100
+Subject: [PATCH 1/5] USB3: use bMaxBurst from the SS endpoint companion
+ descriptor
+
+xhci_configure_endpoint() hardcoded Max Burst Size to 0 in the endpoint
+context. Use the bMaxBurst recorded by USBDriver from the endpoint's
+SuperSpeed Endpoint Companion Descriptor; 0 when there is none, so
+behaviour for non-SuperSpeed endpoints is unchanged.
+
+Only the BRANCH_NHUSB code path (the one the Makefile builds) is changed.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ c/xhci | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
 diff --git a/c/xhci b/c/xhci
 index f321267..0061097 100644
 --- a/c/xhci
@@ -32,3 +50,6 @@ index f321267..0061097 100644
  	    XHCI_EPCTX_1_MAXP_SIZE_SET(UE_GET_SIZE(mps))
  	    );
  #else
+-- 
+2.53.0
+

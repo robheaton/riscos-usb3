@@ -1,7 +1,28 @@
+From 61705f27c7d1473d694ac13ebc85ac3621fd9149 Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:25 +0100
+Subject: [PATCH 3/5] USB3: compute the SS route string for devices behind
+ external hubs
+
+xhci_new_device_common() passed a hardcoded route string of 0 to
+xhci_init_slot(), which is only right for a device attached directly to a
+root port. Build the real Route String (xHCI spec 4.3.3): the downstream
+port number at each hub tier below the root, tier 1 in the least
+significant nibble, up to 5 tiers. Only used for SuperSpeed devices;
+everything else still gets 0.
+
+Untested on hardware: needs a SuperSpeed hub with a device behind it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ c/xhci | 34 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
 diff --git a/c/xhci b/c/xhci
+index 446571a..4d1e33d 100644
 --- a/c/xhci
 +++ b/c/xhci
-@@ -1908,6 +1908,36 @@
+@@ -1908,6 +1908,36 @@ xhci_get_lock(struct usbd_bus *bus, kmutex_t **lock)
  }
  
  #ifdef RISCOS
@@ -38,7 +59,7 @@ diff --git a/c/xhci b/c/xhci
  static usbd_status xhci_new_device_common(usbd_device_handle dev, bool bsr)
  {
  	struct xhci_softc * const sc = dev->bus->hci_private;
-@@ -1931,7 +1961,9 @@
+@@ -1931,7 +1961,9 @@ static usbd_status xhci_new_device_common(usbd_device_handle dev, bool bsr)
  	err = xhci_enable_slot(sc, &slot);
  	if (err)
  		return err;
@@ -49,3 +70,6 @@ diff --git a/c/xhci b/c/xhci
  	if (err)
  		return err;
  	xs = &sc->sc_slots[slot];
+-- 
+2.53.0
+

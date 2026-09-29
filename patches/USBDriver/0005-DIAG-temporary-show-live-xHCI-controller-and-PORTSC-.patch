@@ -1,0 +1,98 @@
+From b01590b0d264f466b8b0c7761249dd178d73caec Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:43:19 +0100
+Subject: [PATCH 5/5] DIAG (temporary): show live xHCI controller and PORTSC
+ registers in *USBDevInfo
+
+Every diagnostic so far looked at derived state (decoded speeds, port
+counts); nothing had ever shown what the hardware itself reports for the
+SuperSpeed ports. Add to struct usbd_bus a magic-guarded hook plus a
+register snapshot: *USBDevInfo on any device of an xHCI bus calls the
+host controller driver's diag_refresh(), which re-reads USBCMD, USBSTS,
+HCSPARAMS1, HCCPARAMS and PORTSC for up to 8 ports, and prints them
+decoded (ccs/ped/pp/pls/speed/change bits) along with how many port
+status change events each port has raised.
+
+Because it is a live read at command time it also works when hotplug is
+not noticed by the stack: unplug/replug and run it again.
+
+The hook is only called when diag_magic matches, so a host controller
+module built against an older usbdivar.h is not affected.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ build/c/usbmodule  | 30 ++++++++++++++++++++++++++++++
+ dev/usb/h/usbdivar | 16 ++++++++++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/build/c/usbmodule b/build/c/usbmodule
+index 8f9323d..20a8ae5 100644
+--- a/build/c/usbmodule
++++ b/build/c/usbmodule
+@@ -802,6 +802,36 @@ static _kernel_oserror* command_dev_info (int n)
+     printf ("HC SS ports (diag) : start=%d count=%d\n",
+             udev->bus->diag_ss_start, udev->bus->diag_ss_count);
+ 
++    /* TEMPORARY: live xHCI controller and per-port registers, re-read
++     * now by the HC driver itself. Only trust the hook if the magic
++     * matches -- see usbdivar.h. PORTSC fields: ccs=connected, ped=port
++     * enabled, pp=powered, pls=link state (0 U0, 4 Disabled, 5 RxDetect,
++     * 6 Inactive, 7 Polling, 10 Compliance), spd=port speed ID (1 FS,
++     * 2 LS, 3 HS, 4 SS), chg=change bits (CSC PEC WRC OCC PRC PLC CEC).
++     * events/last = port status change events seen for that port and
++     * its PORTSC when the latest one fired. */
++    if (udev->bus->diag_magic == USBD_DIAG_MAGIC && udev->bus->diag_refresh != NULL)
++    {
++        struct usbd_bus *b = udev->bus;
++        int p;
++
++        b->diag_refresh (b);
++        printf ("xHCI USBCMD=%08X USBSTS=%08X HCSPARAMS1=%08X HCCPARAMS=%08X\n",
++                (unsigned)b->diag_regs[0], (unsigned)b->diag_regs[1],
++                (unsigned)b->diag_regs[2], (unsigned)b->diag_regs[3]);
++        for (p = 0; p < b->diag_nports; p++)
++        {
++            unsigned v = (unsigned)b->diag_portsc[p];
++
++            printf ("Port %d: %08X ccs=%d ped=%d pp=%d pls=%d spd=%d chg=%02X"
++                    " events=%u last=%08X\n",
++                    p + 1, v, (int)(v & 1), (int)((v >> 1) & 1), (int)((v >> 9) & 1),
++                    (int)((v >> 5) & 0xF), (int)((v >> 10) & 0xF),
++                    (v >> 17) & 0x7F,
++                    (unsigned)b->diag_ev_count[p], (unsigned)b->diag_ev_portsc[p]);
++        }
++    }
++
+     return NULL;
+ }
+ 
+diff --git a/dev/usb/h/usbdivar b/dev/usb/h/usbdivar
+index 5f60672..5e9e85c 100644
+--- a/dev/usb/h/usbdivar
++++ b/dev/usb/h/usbdivar
+@@ -161,6 +161,22 @@ struct usbd_bus {
+ 	 * XHCIDriver does). */
+ 	int			diag_hs_start, diag_hs_count;
+ 	int			diag_ss_start, diag_ss_count;
++
++	/* TEMPORARY: live controller/port register snapshot, for USB3
++	 * diagnosis. diag_refresh may only be called if diag_magic ==
++	 * USBD_DIAG_MAGIC: an HC driver built against an older copy of this
++	 * header never writes it, and these words then belong to whatever
++	 * follows the (smaller) struct in its softc. The HC driver's own
++	 * event handler fills diag_ev_*; diag_refresh re-reads the rest. */
++#define USBD_DIAG_MAGIC		0x58484349	/* 'XHCI' */
++#define USBD_DIAG_MAXPORTS	8
++	u_int32_t		diag_magic;
++	void		      (*diag_refresh)(struct usbd_bus *);
++	u_int32_t		diag_regs[4];	/* USBCMD USBSTS HCSPARAMS1 HCCPARAMS */
++	int			diag_nports;
++	u_int32_t		diag_portsc[USBD_DIAG_MAXPORTS];
++	u_int32_t		diag_ev_count[USBD_DIAG_MAXPORTS];
++	u_int32_t		diag_ev_portsc[USBD_DIAG_MAXPORTS];
+ #endif
+ };
+ 
+-- 
+2.53.0
+

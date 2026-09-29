@@ -1,0 +1,97 @@
+From fad7b49c45b080c7f14004e576d800f2d25724c1 Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:12 +0100
+Subject: [PATCH 4/5] DIAG (temporary): record raw wPortStatus and HC port
+ ranges, show in *USBDevInfo
+
+Diagnostic scaffolding, not for upstream. Adds:
+- struct usbd_device.diag_pstatus: the wPortStatus word uhub_explore()
+  decoded the device's speed from
+- struct usbd_bus.diag_{hs,ss}_{start,count}: root port ranges reported
+  by the host controller driver (only XHCIDriver sets them)
+- *USBDevInfo prints those, plus the advertised port count for hubs
+
+Used to establish on real hardware that the Pi 4 xHCI has hs_count=1 and
+ss_count=4, and that the root hub advertised only one port.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ build/c/usbmodule  | 17 +++++++++++++++++
+ dev/usb/c/uhub     |  4 ++++
+ dev/usb/h/usbdivar | 10 ++++++++++
+ 3 files changed, 31 insertions(+)
+
+diff --git a/build/c/usbmodule b/build/c/usbmodule
+index c6a9e13..8f9323d 100644
+--- a/build/c/usbmodule
++++ b/build/c/usbmodule
+@@ -785,6 +785,23 @@ static _kernel_oserror* command_dev_info (int n)
+     sprintf (speed, "Spd%d", udev->speed);
+     sprintf (string, "%s\n", lookupmsg (speed, NULL));    formatpair ("DISpd", width, string);
+ 
++    /* TEMPORARY: raw wPortStatus this device's speed was decoded from,
++     * for USB3 diagnosis -- remove once diagnosis is complete */
++    printf ("Raw port status (diag) : %04X\n", udev->diag_pstatus);
++
++    /* TEMPORARY: if this device is itself a hub (including the fake
++     * root hub), show how many ports it thinks it has -- for USB3
++     * diagnosis, to check whether XHCIDriver's root hub emulation is
++     * under-reporting its port count relative to sc_ss_port_count */
++    if (udev->hub != NULL)
++        printf ("Hub port count (diag) : %d\n", udev->hub->hubdesc.bNbrPorts);
++
++    /* TEMPORARY: HC-driver's HS/SS root port range, for USB3 diagnosis */
++    printf ("HC HS ports (diag) : start=%d count=%d\n",
++            udev->bus->diag_hs_start, udev->bus->diag_hs_count);
++    printf ("HC SS ports (diag) : start=%d count=%d\n",
++            udev->bus->diag_ss_start, udev->bus->diag_ss_count);
++
+     return NULL;
+ }
+ 
+diff --git a/dev/usb/c/uhub b/dev/usb/c/uhub
+index 12db705..17993de 100644
+--- a/dev/usb/c/uhub
++++ b/dev/usb/c/uhub
+@@ -650,6 +650,10 @@ uhub_explore(usbd_device_handle dev)
+ 		/* Get device info and set its address. */
+ 		err = usbd_new_device(USBDEV(sc->sc_dev), dev->bus,
+ 			  dev->depth + 1, speed, port, up);
++		/* TEMPORARY: remember the raw port status this device's
++		 * speed was decoded from, for USB3 diagnosis */
++		if (up->device != NULL)
++			up->device->diag_pstatus = status;
+ 		/* XXX retry a few times? */
+ 		if (err) {
+ 			DPRINTFN(-1,("uhub_explore: usb_new_device failed, "
+diff --git a/dev/usb/h/usbdivar b/dev/usb/h/usbdivar
+index b7ff8c1..5f60672 100644
+--- a/dev/usb/h/usbdivar
++++ b/dev/usb/h/usbdivar
+@@ -155,6 +155,13 @@ struct usbd_bus {
+ #ifndef __riscos
+ 	bus_dma_tag_t		dmatag;	/* DMA tag */
+ #endif
++#ifdef __riscos
++	/* TEMPORARY: HC-driver-reported HS/SS root port ranges, for USB3
++	 * diagnosis. Zero if the HC driver doesn't set them (only
++	 * XHCIDriver does). */
++	int			diag_hs_start, diag_hs_count;
++	int			diag_ss_start, diag_ss_count;
++#endif
+ };
+ 
+ struct usbd_device {
+@@ -185,6 +192,9 @@ struct usbd_device {
+ 	void		       *hci_private;
+ #ifdef __riscos
+ 	int			dv_unit;       /* underlying RISCOS device num */
++	u_int16_t		diag_pstatus;  /* TEMPORARY: raw wPortStatus this
++					        * device's speed was decoded
++					        * from, for USB3 diagnosis */
+ #endif
+ };
+ 
+-- 
+2.53.0
+

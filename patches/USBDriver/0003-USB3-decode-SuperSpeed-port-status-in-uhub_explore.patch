@@ -1,3 +1,18 @@
+From fc21717b04cda83f0cc3e022a04dc423da90644a Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:03 +0100
+Subject: [PATCH 3/5] USB3: decode SuperSpeed port status in uhub_explore
+
+UPS_LOW_SPEED, UPS_HIGH_SPEED and UPS_SUPER_SPEED are not independent
+flag bits but a two-bit field in wPortStatus, and UPS_SUPER_SPEED (0x0600)
+has both of the other two bits set. Test for it first, otherwise a
+SuperSpeed port would be classified as High speed.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ dev/usb/c/uhub | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
 diff --git a/dev/usb/c/uhub b/dev/usb/c/uhub
 index bfa6009..12db705 100644
 --- a/dev/usb/c/uhub
@@ -19,3 +34,6 @@ index bfa6009..12db705 100644
  			speed = USB_SPEED_HIGH;
  		else if (status & UPS_LOW_SPEED)
  			speed = USB_SPEED_LOW;
+-- 
+2.53.0
+

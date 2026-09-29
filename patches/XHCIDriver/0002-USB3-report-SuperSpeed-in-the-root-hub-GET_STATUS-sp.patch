@@ -1,0 +1,32 @@
+From 3b40202f9d772f43b061556e4335be1e0a827cca Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:25 +0100
+Subject: [PATCH 2/5] USB3: report SuperSpeed in the root hub GET_STATUS speed
+ decode
+
+Map xHCI port speed ID 4 (SuperSpeed) to UPS_SUPER_SPEED. Until a
+SuperSpeed port is exposed through the emulated root hub this never
+triggers; it is groundwork.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ c/xhci | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/c/xhci b/c/xhci
+index 0061097..446571a 100644
+--- a/c/xhci
++++ b/c/xhci
+@@ -3135,6 +3135,9 @@ xhci_root_ctrl_start(usbd_xfer_handle xfer)
+ 		case 3:
+ 			i = UPS_HIGH_SPEED;
+ 			break;
++		case 4:
++			i = UPS_SUPER_SPEED;
++			break;
+ 		default:
+ 			i = 0;
+ 			break;
+-- 
+2.53.0
+

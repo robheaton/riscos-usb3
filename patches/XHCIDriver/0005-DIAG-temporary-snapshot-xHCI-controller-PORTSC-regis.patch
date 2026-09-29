@@ -1,0 +1,111 @@
+From 9e600c5a7537f904d90f564ea86ee7c12665af48 Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:44:29 +0100
+Subject: [PATCH 5/5] DIAG (temporary): snapshot xHCI controller/PORTSC
+ registers, count port status change events
+
+Provides the host controller half of the USBDriver "live register" hook
+(struct usbd_bus.diag_refresh, guarded by diag_magic):
+
+- xhci_diag_refresh() re-reads USBCMD, USBSTS, HCSPARAMS1, HCCPARAMS and
+  PORTSC for up to 8 ports. Registered at the end of xhci_init().
+- xhci_rhpsc() counts every port status change event per port and keeps
+  the PORTSC value seen at that moment, before its existing filtering
+  decides whether to act on the event.
+
+Answers, from the hardware itself: do the SuperSpeed ports ever see a
+device (ccs), do they link train (pls/spd), and does plugging in a device
+raise any event at all when the stack does not appear to notice hotplug.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ c/xhci | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/c/xhci b/c/xhci
+index 6c2987c..4c9540b 100644
+--- a/c/xhci
++++ b/c/xhci
+@@ -208,6 +208,7 @@ static void xhci_ring_free(struct xhci_softc * const, struct xhci_ring * const);
+ static void xhci_noop(usbd_pipe_handle);
+ 
+ static int xhci_rhport_reg(struct xhci_softc *, int);
++static void xhci_diag_refresh(struct usbd_bus *);
+ 
+ static usbd_status xhci_root_ctrl_transfer(usbd_xfer_handle);
+ static usbd_status xhci_root_ctrl_start(usbd_xfer_handle);
+@@ -911,6 +912,12 @@ xhci_init(struct xhci_softc *sc)
+ 	sc->sc_bus.diag_hs_count = sc->sc_hs_port_count;
+ 	sc->sc_bus.diag_ss_start = sc->sc_ss_port_start;
+ 	sc->sc_bus.diag_ss_count = sc->sc_ss_port_count;
++	sc->sc_bus.diag_magic = 0;
++	sc->sc_bus.diag_refresh = NULL;
++	sc->sc_bus.diag_nports = 0;
++	memset(sc->sc_bus.diag_portsc, 0, sizeof(sc->sc_bus.diag_portsc));
++	memset(sc->sc_bus.diag_ev_count, 0, sizeof(sc->sc_bus.diag_ev_count));
++	memset(sc->sc_bus.diag_ev_portsc, 0, sizeof(sc->sc_bus.diag_ev_portsc));
+ 
+ 	/*
+ 	 * SuperSpeed ports are left to link at whatever speed the attached
+@@ -1056,6 +1063,10 @@ xhci_init(struct xhci_softc *sc)
+ 	sc->sc_bus.methods = &xhci_bus_methods;
+ 	sc->sc_bus.pipe_size = sizeof(struct xhci_pipe);
+ 
++	/* TEMPORARY DIAGNOSTIC (see usbdivar.h): magic last */
++	sc->sc_bus.diag_refresh = xhci_diag_refresh;
++	sc->sc_bus.diag_magic = USBD_DIAG_MAGIC;
++
+ 	return USBD_NORMAL_COMPLETION;
+ }
+ 
+@@ -1573,6 +1584,29 @@ xhci_clear_endpoint_stall_async(struct usbd_xfer *xfer)
+ }
+ #endif
+ 
++/*
++ * TEMPORARY DIAGNOSTIC (see usbdivar.h): re-read the controller and port
++ * registers into the bus struct, so USBDriver's *USBDevInfo can show what
++ * the hardware itself reports, independent of the root hub emulation.
++ * PORTSC reads have no side effects.
++ */
++static void
++xhci_diag_refresh(struct usbd_bus *bus)
++{
++	struct xhci_softc * const sc = bus->hci_private;
++	int i, n;
++
++	bus->diag_regs[0] = xhci_op_read_4(sc, XHCI_USBCMD);
++	bus->diag_regs[1] = xhci_op_read_4(sc, XHCI_USBSTS);
++	bus->diag_regs[2] = xhci_cap_read_4(sc, XHCI_HCSPARAMS1);
++	bus->diag_regs[3] = xhci_cap_read_4(sc, XHCI_HCCPARAMS);
++	n = sc->sc_maxports < USBD_DIAG_MAXPORTS ?
++	    sc->sc_maxports : USBD_DIAG_MAXPORTS;
++	for (i = 1; i <= n; i++)
++		bus->diag_portsc[i - 1] = xhci_op_read_4(sc, XHCI_PORTSC(i));
++	bus->diag_nports = n;
++}
++
+ static void
+ xhci_rhpsc(struct xhci_softc * const sc, u_int port)
+ {
+@@ -1582,6 +1616,17 @@ xhci_rhpsc(struct xhci_softc * const sc, u_int port)
+ 	XHCIHIST_FUNC(); XHCIHIST_CALLED();
+ 	DPRINTFN(4, "port %u status change", port, 0, 0, 0);
+ 
++	/*
++	 * TEMPORARY DIAGNOSTIC (see usbdivar.h): count every port status
++	 * change event and note PORTSC as it was when we handled it, before
++	 * any of the filtering below decides whether to act on it.
++	 */
++	if (port >= 1 && port <= USBD_DIAG_MAXPORTS) {
++		sc->sc_bus.diag_ev_count[port - 1]++;
++		sc->sc_bus.diag_ev_portsc[port - 1] =
++		    xhci_op_read_4(sc, XHCI_PORTSC(port));
++	}
++
+ 	if (xfer == NULL)
+ 		return;
+ 
+-- 
+2.53.0
+

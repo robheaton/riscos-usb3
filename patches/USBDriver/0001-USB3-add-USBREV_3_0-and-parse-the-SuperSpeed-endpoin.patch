@@ -1,3 +1,25 @@
+From a6943b1609601ccac861ee8a8fa6d9c6c78f72dd Mon Sep 17 00:00:00 2001
+From: Rob Heaton <rob@northwestlinux.co.uk>
+Date: Tue, 29 Sep 2026 20:42:03 +0100
+Subject: [PATCH 1/5] USB3: add USBREV_3_0 and parse the SuperSpeed endpoint
+ companion descriptor
+
+Add USBREV_3_0 to the bus revision enum, the SuperSpeed Endpoint
+Companion Descriptor type and structure (layout cross-checked against
+NetBSD sys/dev/usb/usb.h), and a pointer to it in struct usbd_endpoint.
+usbd_fill_iface_data() records the companion descriptor for endpoints of
+SuperSpeed devices.
+
+Inert for non-SuperSpeed devices: dev->speed is never USB_SPEED_SUPER
+until a host controller driver reports it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ dev/usb/c/usb_subr | 17 +++++++++++++++++
+ dev/usb/h/usb      | 14 ++++++++++++++
+ dev/usb/h/usbdivar |  4 +++-
+ 3 files changed, 34 insertions(+), 1 deletion(-)
+
 diff --git a/dev/usb/c/usb_subr b/dev/usb/c/usb_subr
 index c5e5ee9..2657f54 100644
 --- a/dev/usb/c/usb_subr
@@ -26,30 +48,8 @@ index c5e5ee9..2657f54 100644
  		if (dev->speed == USB_SPEED_HIGH) {
  			u_int mps;
  			/* Control and bulk endpoints have max packet limits. */
-diff --git a/dev/usb/h/usbdivar b/dev/usb/h/usbdivar
-index 5932f6e..b7ff8c1 100644
---- a/dev/usb/h/usbdivar
-+++ b/dev/usb/h/usbdivar
-@@ -61,6 +61,7 @@ struct usbd_port;
- 
- struct usbd_endpoint {
- 	usb_endpoint_descriptor_t *edesc;
-+	usb_endpoint_ss_comp_descriptor_t *ecomp; /* NULL if not SuperSpeed */
- 	int			refcnt;
- 	int datatoggle;
- };
-@@ -140,7 +141,8 @@ struct usbd_bus {
- #define USBREV_1_0	2
- #define USBREV_1_1	3
- #define USBREV_2_0	4
--#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0" }
-+#define USBREV_3_0	5
-+#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0", "3.0" }
- 
- #ifdef USB_USE_SOFTINTR
- #ifdef __HAVE_GENERIC_SOFT_INTERRUPTS
 diff --git a/dev/usb/h/usb b/dev/usb/h/usb
-index 4406022..630d25b 100644
+index 4406022..0f2bfe0 100644
 --- a/dev/usb/h/usb
 +++ b/dev/usb/h/usb
 @@ -296,6 +296,20 @@ typedef struct {
@@ -73,3 +73,28 @@ index 4406022..630d25b 100644
  typedef struct {
  	uByte		bLength;
  	uByte		bDescriptorType;
+diff --git a/dev/usb/h/usbdivar b/dev/usb/h/usbdivar
+index 5932f6e..b7ff8c1 100644
+--- a/dev/usb/h/usbdivar
++++ b/dev/usb/h/usbdivar
+@@ -61,6 +61,7 @@ struct usbd_port;
+ 
+ struct usbd_endpoint {
+ 	usb_endpoint_descriptor_t *edesc;
++	usb_endpoint_ss_comp_descriptor_t *ecomp; /* NULL if not SuperSpeed */
+ 	int			refcnt;
+ 	int datatoggle;
+ };
+@@ -140,7 +141,8 @@ struct usbd_bus {
+ #define USBREV_1_0	2
+ #define USBREV_1_1	3
+ #define USBREV_2_0	4
+-#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0" }
++#define USBREV_3_0	5
++#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0", "3.0" }
+ 
+ #ifdef USB_USE_SOFTINTR
+ #ifdef __HAVE_GENERIC_SOFT_INTERRUPTS
+-- 
+2.53.0
+
